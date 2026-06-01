@@ -3,6 +3,8 @@ pragma solidity ^0.8.28;
 
 contract DAOVault {
     uint256 public constant MAX_MEMBER_COUNT = 20;
+    uint8 public constant EXECUTION_FAILURE_INSUFFICIENT_BALANCE = 1;
+    uint8 public constant EXECUTION_FAILURE_TRANSFER_FAILED = 2;
 
     enum ApprovalRule {
         Majority,
@@ -61,6 +63,7 @@ contract DAOVault {
     mapping(uint256 => Proposal) private _proposals;
     mapping(uint256 => mapping(address => bool)) private _hasVoted;
     mapping(uint256 => mapping(address => bool)) private _voteSupport;
+    bool private _executionLocked;
 
     event DepositReceived(
         address indexed daoAddress,
@@ -102,6 +105,21 @@ contract DAOVault {
         uint256 noVotes,
         uint256 timestamp
     );
+    event ProposalExecuted(
+        address indexed daoAddress,
+        uint256 indexed proposalId,
+        address indexed recipient,
+        uint256 amountWei,
+        uint256 timestamp
+    );
+    event ProposalExecutionFailed(
+        address indexed daoAddress,
+        uint256 indexed proposalId,
+        address indexed recipient,
+        uint256 amountWei,
+        uint8 reasonCode,
+        uint256 timestamp
+    );
 
     error EmptyName();
     error InvalidCreator();
@@ -127,6 +145,9 @@ contract DAOVault {
     error InvalidCancelReasonHash();
     error AlreadyVoted(address voter);
     error ProposalDeadlineNotReached();
+    error ProposalNotExecutable(ProposalStatus currentStatus);
+    error ProposalNotSpending(ProposalType proposalType);
+    error ReentrantExecution();
 
     constructor(
         string memory daoName,
@@ -149,6 +170,14 @@ contract DAOVault {
         for (uint256 i = 0; i < additionalMembers.length; i++) {
             _addMember(additionalMembers[i]);
         }
+    }
+
+    modifier nonReentrantExecution() {
+        if (_executionLocked) revert ReentrantExecution();
+
+        _executionLocked = true;
+        _;
+        _executionLocked = false;
     }
 
     function getMembers() external view returns (address[] memory) {
@@ -339,6 +368,49 @@ contract DAOVault {
         );
     }
 
+    function executeProposal(uint256 proposalId) external nonReentrantExecution {
+        if (!_proposalExists(proposalId)) revert ProposalNotFound(proposalId);
+        if (!isMember[msg.sender]) revert NotMember(msg.sender);
+        if (status != DaoStatus.Active) revert DaoNotActive(status);
+
+        Proposal storage proposal = _proposals[proposalId];
+
+        if (proposal.proposalType != ProposalType.Spending) {
+            revert ProposalNotSpending(proposal.proposalType);
+        }
+        if (proposal.proposalStatus != ProposalStatus.Executable) {
+            revert ProposalNotExecutable(proposal.proposalStatus);
+        }
+
+        if (address(this).balance < proposal.amountWei) {
+            _markExecutionFailed(proposal, proposalId, EXECUTION_FAILURE_INSUFFICIENT_BALANCE);
+        } else {
+            proposal.proposalStatus = ProposalStatus.Executed;
+
+            (bool success, ) = proposal.recipient.call{value: proposal.amountWei}("");
+
+            if (success) {
+                emit ProposalExecuted(
+                    address(this),
+                    proposalId,
+                    proposal.recipient,
+                    proposal.amountWei,
+                    block.timestamp
+                );
+            } else {
+                proposal.proposalStatus = ProposalStatus.ExecutionFailed;
+                emit ProposalExecutionFailed(
+                    address(this),
+                    proposalId,
+                    proposal.recipient,
+                    proposal.amountWei,
+                    EXECUTION_FAILURE_TRANSFER_FAILED,
+                    block.timestamp
+                );
+            }
+        }
+    }
+
     function _addMember(address member) private {
         if (member == address(0)) revert InvalidMember();
         if (isMember[member]) revert DuplicateMember(member);
@@ -376,5 +448,22 @@ contract DAOVault {
         }
 
         return proposal.yesVotes * 3 >= totalMemberCount * 2;
+    }
+
+    function _markExecutionFailed(
+        Proposal storage proposal,
+        uint256 proposalId,
+        uint8 reasonCode
+    ) private {
+        proposal.proposalStatus = ProposalStatus.ExecutionFailed;
+
+        emit ProposalExecutionFailed(
+            address(this),
+            proposalId,
+            proposal.recipient,
+            proposal.amountWei,
+            reasonCode,
+            block.timestamp
+        );
     }
 }
