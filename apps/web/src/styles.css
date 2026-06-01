@@ -343,6 +343,7 @@ button:disabled {
 }
 
 .form-panel input,
+.form-panel textarea,
 .amount-input input {
   width: 100%;
   border: 1px solid #c3c6d7;
@@ -351,6 +352,10 @@ button:disabled {
   color: #191c1e;
   padding: 12px 14px;
   font: inherit;
+}
+
+.form-panel textarea {
+  resize: vertical;
 }
 
 .form-panel p,
@@ -407,6 +412,17 @@ button:disabled {
   display: flex;
   gap: 10px;
   margin-top: 14px;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.checkbox-row input {
+  width: auto;
 }
 
 .mono-input {
@@ -500,6 +516,16 @@ button:disabled {
   color: #545f73;
 }
 
+.proposal-row {
+  width: 100%;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
 .verification-panel {
   display: flex;
   align-items: center;
@@ -552,6 +578,12 @@ button:disabled {
 
 .summary-list dt {
   color: #545f73;
+}
+
+.action-stack {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
 }
 
 .dao-card,

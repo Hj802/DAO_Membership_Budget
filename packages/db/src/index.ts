@@ -512,6 +512,8 @@ function getEventStatus(event: ChainEvent): string {
   switch (event.eventType) {
     case EVENT_TYPES.PROPOSAL_FINALIZED:
       return `proposal:${event.finalStatus}`;
+    case EVENT_TYPES.VOTE_CAST:
+      return event.support ? 'vote:yes' : 'vote:no';
     case EVENT_TYPES.PROPOSAL_EXECUTED:
       return 'executed';
     case EVENT_TYPES.PROPOSAL_EXECUTION_FAILED:

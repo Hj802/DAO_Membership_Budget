@@ -1,15 +1,36 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApprovalRule, DaoStatus, SEPOLIA_CHAIN_ID } from '@dao-budget/shared';
-import { createApiClient, filterDaosByStatus, type DaoSummary } from './api';
+import {
+  ApprovalRule,
+  ApprovalType,
+  DaoStatus,
+  ProposalStatus,
+  SEPOLIA_CHAIN_ID,
+} from '@dao-budget/shared';
+import {
+  createApiClient,
+  filterDaosByStatus,
+  type DaoDetail,
+  type DaoSummary,
+  type TransactionLog,
+} from './api';
 import { ConnectedLayout, DisconnectedView } from './App';
 import {
+  cancelProposalSelector,
   createDaoSelector,
+  createProposalSelector,
   depositSelector,
+  encodeCancelProposalCall,
   encodeCreateDaoCall,
+  encodeCreateSpendingProposalCall,
+  encodeFinalizeProposalCall,
+  encodeVoteCall,
+  finalizeProposalSelector,
   toQuantityHex,
   validateCreateDaoInput,
   validateDepositEth,
+  validateSpendingProposalInput,
+  voteSelector,
 } from './transactions';
 import { blockExplorerAddressUrl, formatAddress, isSepolia } from './wallet';
 
@@ -38,36 +59,93 @@ const daos: DaoSummary[] = [
   },
 ];
 
+const votingDeadline = Math.floor(Date.now() / 1000) + 3600;
+const closedDeadline = Math.floor(Date.now() / 1000) - 3600;
+
+const daoDetail: DaoDetail = {
+  ...daos[0],
+  members: [memberAddress, '0xc000000000000000000000000000000000000002'],
+  proposals: [
+    {
+      proposalId: '1',
+      title: 'MT 숙소 예약비',
+      description: '숙소 예약금을 지출합니다.',
+      amountWei: '500000000000000000',
+      recipient: '0xc000000000000000000000000000000000000002',
+      proposer: memberAddress,
+      status: ProposalStatus.Voting,
+      deadline: votingDeadline,
+      approvalType: ApprovalType.Unanimous,
+      contentHash: `0x${'a'.repeat(64)}`,
+    },
+    {
+      proposalId: '2',
+      title: '서버비',
+      description: '클라우드 서버비를 지출합니다.',
+      amountWei: '100000000000000000',
+      recipient: '0xc000000000000000000000000000000000000002',
+      proposer: '0xc000000000000000000000000000000000000002',
+      status: ProposalStatus.Executable,
+      deadline: closedDeadline,
+      approvalType: ApprovalType.Default,
+      contentHash: `0x${'b'.repeat(64)}`,
+    },
+  ],
+};
+
+const voteHistory: TransactionLog[] = [
+  {
+    txHash: '0xvote',
+    logIndex: 0,
+    daoAddress: daos[0].daoAddress,
+    proposalId: '1',
+    eventType: 'VoteCast',
+    actor: memberAddress,
+    amountWei: null,
+    status: 'vote:yes',
+    blockNumber: '1',
+    createdAt: '2026-06-02T00:00:00.000Z',
+  },
+];
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function renderConnectedLayout(overrides: Partial<Parameters<typeof ConnectedLayout>[0]> = {}) {
-  return renderToStaticMarkup(
-    <ConnectedLayout
-      address={memberAddress}
-      budgetHistory={[]}
-      chainId={SEPOLIA_CHAIN_ID}
-      daoDetail={null}
-      daoError={null}
-      daoFilter="active"
-      daos={daos}
-      isLoadingDaos={false}
-      isLoadingDetail={false}
-      onCreateDao={async () => undefined}
-      onDeposit={async () => undefined}
-      onFilterChange={() => undefined}
-      onRefresh={() => undefined}
-      onSelectDao={() => undefined}
-      onSwitchNetwork={() => undefined}
-      onViewChange={() => undefined}
-      selectedDao={daos[0]}
-      txState={{ status: 'idle', message: '' }}
-      view="list"
-      walletError={null}
-      {...overrides}
-    />,
-  );
+function renderConnectedLayout(overrides: Record<string, unknown> = {}) {
+  const props = {
+    address: memberAddress,
+    budgetHistory: [],
+    chainId: SEPOLIA_CHAIN_ID,
+    daoDetail: null,
+    daoError: null,
+    daoFilter: 'active',
+    daos,
+    isLoadingDaos: false,
+    isLoadingDetail: false,
+    onCancelProposal: async () => undefined,
+    onCreateDao: async () => undefined,
+    onCreateProposal: async () => undefined,
+    onDeposit: async () => undefined,
+    onFilterChange: () => undefined,
+    onFinalizeProposal: async () => undefined,
+    onProposalFilterChange: () => undefined,
+    onRefresh: () => undefined,
+    onSelectDao: () => undefined,
+    onSelectProposal: () => undefined,
+    onSwitchNetwork: () => undefined,
+    onViewChange: () => undefined,
+    onVote: async () => undefined,
+    proposalFilter: 'all',
+    selectedDao: daos[0],
+    selectedProposalId: null,
+    txState: { status: 'idle', message: '' },
+    view: 'list',
+    walletError: null,
+    ...overrides,
+  } as Parameters<typeof ConnectedLayout>[0];
+
+  return renderToStaticMarkup(<ConnectedLayout {...props} />);
 }
 
 describe('phase 10 and 11 web UI', () => {
@@ -197,5 +275,150 @@ describe('phase 10 and 11 web UI', () => {
 
     expect(html).toContain('종료 상태의 DAO에서는 입금할 수 없습니다.');
     expect(html).toContain('disabled=""');
+  });
+
+  it('renders the spending proposal creation screen and unanimous option', () => {
+    const html = renderConnectedLayout({
+      daoDetail,
+      selectedDao: daos[0],
+      view: 'proposal-create',
+    });
+
+    expect(html).toContain('지출 제안 생성');
+    expect(html).toContain('canonical JSON');
+    expect(html).toContain('이 제안은 만장일치 필요');
+  });
+
+  it('validates spending proposal form input and rejects past deadlines', () => {
+    expect(
+      validateSpendingProposalInput(
+        {
+          daoAddress: daos[0].daoAddress,
+          proposer: memberAddress,
+          title: '서버비',
+          description: '클라우드 서버비',
+          amountEth: '0.1',
+          recipient: '0xc000000000000000000000000000000000000002',
+          deadline: closedDeadline,
+          approvalType: ApprovalType.Default,
+        },
+        Date.now(),
+      ),
+    ).toMatchObject({ ok: false });
+
+    expect(
+      validateSpendingProposalInput(
+        {
+          daoAddress: daos[0].daoAddress,
+          proposer: memberAddress,
+          title: '서버비',
+          description: '클라우드 서버비',
+          amountEth: '0.1',
+          recipient: '0xc000000000000000000000000000000000000002',
+          deadline: votingDeadline,
+          approvalType: ApprovalType.Unanimous,
+        },
+        Date.now(),
+      ),
+    ).toMatchObject({ ok: true, approvalType: ApprovalType.Unanimous });
+  });
+
+  it('encodes proposal create, vote, finalize, and cancel transaction payloads', () => {
+    expect(
+      encodeCreateSpendingProposalCall({
+        amountWei: '100000000000000000',
+        recipient: '0xc000000000000000000000000000000000000002',
+        deadline: votingDeadline,
+        approvalType: ApprovalType.Unanimous,
+        contentHash: `0x${'a'.repeat(64)}`,
+      }).startsWith(createProposalSelector),
+    ).toBe(true);
+    expect(encodeVoteCall('1', true).startsWith(voteSelector)).toBe(true);
+    expect(encodeFinalizeProposalCall('1').startsWith(finalizeProposalSelector)).toBe(true);
+    expect(
+      encodeCancelProposalCall('1', `0x${'b'.repeat(64)}`).startsWith(cancelProposalSelector),
+    ).toBe(true);
+  });
+
+  it('renders proposal list filters and hides non-matching statuses', () => {
+    const html = renderConnectedLayout({
+      daoDetail,
+      proposalFilter: 'executable',
+      selectedDao: daos[0],
+      view: 'proposals',
+    });
+
+    expect(html).toContain('제안 목록');
+    expect(html).toContain('서버비');
+    expect(html).not.toContain('MT 숙소 예약비');
+  });
+
+  it('renders vote state, duplicate vote warning, and proposer cancel button conditions', () => {
+    const html = renderConnectedLayout({
+      budgetHistory: voteHistory,
+      daoDetail,
+      selectedDao: daos[0],
+      selectedProposalId: '1',
+      view: 'proposal-detail',
+    });
+
+    expect(html).toContain('이미 이 제안에 투표했습니다.');
+    expect(html).toContain('찬성');
+    expect(html).toContain('제안 취소');
+    expect(html).toContain('취소 실행');
+  });
+
+  it('renders finalize action after the voting deadline', () => {
+    const html = renderConnectedLayout({
+      daoDetail: {
+        ...daoDetail,
+        proposals: [{ ...daoDetail.proposals[0], deadline: closedDeadline }],
+      },
+      selectedDao: daos[0],
+      selectedProposalId: '1',
+      view: 'proposal-detail',
+    });
+
+    expect(html).toContain('투표 마감 시간이 지났습니다.');
+    expect(html).toContain('결과 확정');
+  });
+
+  it('calls the proposal hash API with canonical proposal input', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          canonicalJson: '{"amountWei":"1"}',
+          contentHash: `0x${'c'.repeat(64)}`,
+        }),
+        {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        },
+      ),
+    );
+
+    await expect(
+      createApiClient('https://api.example.test').hashProposal({
+        schemaVersion: 1,
+        chainId: SEPOLIA_CHAIN_ID,
+        daoAddress: daos[0].daoAddress,
+        proposalType: 0,
+        proposer: memberAddress,
+        title: '서버비',
+        description: '클라우드 서버비',
+        amountWei: '1',
+        recipient: '0xc000000000000000000000000000000000000002',
+        deadline: votingDeadline,
+        approvalType: ApprovalType.Default,
+      }),
+    ).resolves.toEqual({
+      canonicalJson: '{"amountWei":"1"}',
+      contentHash: `0x${'c'.repeat(64)}`,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.example.test/proposal-details/hash',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 });

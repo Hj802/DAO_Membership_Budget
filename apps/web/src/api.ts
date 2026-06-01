@@ -1,4 +1,4 @@
-import { DaoStatus } from '@dao-budget/shared';
+import { ApprovalType, DaoStatus, ProposalType } from '@dao-budget/shared';
 
 export type DaoSummary = {
   daoAddress: string;
@@ -17,11 +17,21 @@ export type DaoListResponse = {
 };
 
 export type ProposalDetail = {
+  schemaVersion?: number;
+  chainId?: number;
+  daoAddress?: string;
+  proposalType?: ProposalType;
+  proposer?: string;
   proposalId: string;
   title: string;
+  description?: string;
   amountWei: string | null;
+  recipient?: string | null;
   status?: number;
   deadline: number;
+  approvalType?: ApprovalType;
+  contentHash?: string;
+  createdAt?: string;
 };
 
 export type DaoDetail = DaoSummary & {
@@ -46,6 +56,30 @@ export type ApiClient = {
   listMyDaos(memberAddress: string): Promise<DaoSummary[]>;
   getDaoDetail(daoAddress: string, memberAddress: string): Promise<DaoDetail>;
   listBudgetHistory(daoAddress: string, memberAddress: string): Promise<TransactionLog[]>;
+  hashProposal(input: ProposalHashInput): Promise<ProposalHashResult>;
+  saveProposalDetail(
+    input: ProposalHashInput & { proposalId: string; contentHash: string },
+  ): Promise<void>;
+  hashCancelReason(cancelReason: string): Promise<string>;
+};
+
+export type ProposalHashInput = {
+  schemaVersion: number;
+  chainId: number;
+  daoAddress: string;
+  proposalType: ProposalType;
+  proposer: string;
+  title: string;
+  description: string;
+  amountWei: string | null;
+  recipient: string | null;
+  deadline: number;
+  approvalType: ApprovalType;
+};
+
+export type ProposalHashResult = {
+  canonicalJson: string;
+  contentHash: string;
 };
 
 const defaultApiBaseUrl = 'http://127.0.0.1:4000';
@@ -107,6 +141,62 @@ export function createApiClient(
       }
 
       return body.transactions;
+    },
+
+    async hashProposal(input: ProposalHashInput) {
+      const response = await fetch(`${normalizedBaseUrl}/proposal-details/hash`, {
+        body: JSON.stringify(input),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const body = (await response.json()) as Partial<ProposalHashResult> & {
+        error?: string;
+        ok?: boolean;
+      };
+
+      if (!response.ok || body.ok === false || !body.canonicalJson || !body.contentHash) {
+        throw new Error(body.error ?? '제안 해시를 생성하지 못했습니다.');
+      }
+
+      return {
+        canonicalJson: body.canonicalJson,
+        contentHash: body.contentHash,
+      };
+    },
+
+    async saveProposalDetail(input) {
+      const response = await fetch(`${normalizedBaseUrl}/proposal-details`, {
+        body: JSON.stringify(input),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const body = (await response.json()) as {
+        error?: string;
+        ok?: boolean;
+      };
+
+      if (!response.ok || body.ok === false) {
+        throw new Error(body.error ?? '제안 상세 정보를 저장하지 못했습니다.');
+      }
+    },
+
+    async hashCancelReason(cancelReason: string) {
+      const response = await fetch(`${normalizedBaseUrl}/cancel-reasons/hash`, {
+        body: JSON.stringify({ cancelReason }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const body = (await response.json()) as {
+        cancelReasonHash?: string;
+        error?: string;
+        ok?: boolean;
+      };
+
+      if (!response.ok || body.ok === false || !body.cancelReasonHash) {
+        throw new Error(body.error ?? '취소 사유 해시를 생성하지 못했습니다.');
+      }
+
+      return body.cancelReasonHash;
     },
   };
 }

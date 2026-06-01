@@ -213,10 +213,21 @@ describe('db phase 8 sync foundation', () => {
           timestamp: 1_700_000_050,
         },
         {
-          eventType: EVENT_TYPES.TERMINATION_EXECUTED,
+          eventType: EVENT_TYPES.VOTE_CAST,
           txHash: '0x7',
           logIndex: 0,
           blockNumber: 106n,
+          daoAddress,
+          proposalId: 2n,
+          voter: member,
+          support: true,
+          timestamp: 1_700_000_055,
+        },
+        {
+          eventType: EVENT_TYPES.TERMINATION_EXECUTED,
+          txHash: '0x8',
+          logIndex: 0,
+          blockNumber: 107n,
           daoAddress,
           proposalId: 2n,
           memberCount: 2,
@@ -229,7 +240,7 @@ describe('db phase 8 sync foundation', () => {
     });
 
     expect(result).toEqual({
-      appliedEvents: 7,
+      appliedEvents: 8,
       skippedEvents: 0,
       fromBlock: 100n,
       toBlock: 108n,
@@ -248,7 +259,8 @@ describe('db phase 8 sync foundation', () => {
     expect(repository.evidence.get('evidence-1')?.r2ObjectKey).toBe(
       `dao/${normalizedDaoAddress}/proposal/1/evidence/evidence-1/evidence-1.bin`,
     );
-    expect(repository.transactions.size).toBe(7);
+    expect(repository.transactions.get('0x7:0')?.status).toBe('vote:yes');
+    expect(repository.transactions.size).toBe(8);
   });
 
   it('skips duplicate or already-synced events and resumes from the last synced block', async () => {

@@ -1,7 +1,11 @@
-import { ApprovalRule, MAX_DAO_MEMBER_COUNT } from '@dao-budget/shared';
+import { ApprovalRule, ApprovalType, MAX_DAO_MEMBER_COUNT, ProposalType } from '@dao-budget/shared';
 
 export const createDaoSelector = '0xa5daeb23';
 export const depositSelector = '0xd0e30db0';
+export const createProposalSelector = '0x1fa4cb95';
+export const voteSelector = '0xc9d27afe';
+export const finalizeProposalSelector = '0x5652077c';
+export const cancelProposalSelector = '0x8b0bbf39';
 
 const addressPattern = /^0x[a-fA-F0-9]{40}$/;
 
@@ -100,6 +104,62 @@ export function validateDepositEth(value: string) {
   return { ok: true as const, wei };
 }
 
+export type SpendingProposalInput = {
+  daoAddress: string;
+  proposer: string;
+  title: string;
+  description: string;
+  amountEth: string;
+  recipient: string;
+  deadline: number;
+  approvalType: ApprovalType;
+};
+
+export type SpendingProposalValidationResult =
+  | {
+      ok: true;
+      amountWei: string;
+      approvalType: ApprovalType;
+      deadline: number;
+      description: string;
+      recipient: string;
+      title: string;
+    }
+  | { ok: false; error: string };
+
+export function validateSpendingProposalInput(
+  input: SpendingProposalInput,
+  nowMs = Date.now(),
+): SpendingProposalValidationResult {
+  const title = input.title.trim();
+  const description = input.description.trim();
+
+  if (!title) return { ok: false, error: '제안 제목을 입력하세요.' };
+  if (!description) return { ok: false, error: '제안 설명을 입력하세요.' };
+  if (!isAddress(input.daoAddress)) return { ok: false, error: 'DAO 주소가 올바르지 않습니다.' };
+  if (!isAddress(input.proposer)) return { ok: false, error: '제안자 주소가 올바르지 않습니다.' };
+  if (!isAddress(input.recipient)) return { ok: false, error: '수신자 주소가 올바르지 않습니다.' };
+  if (![ApprovalType.Default, ApprovalType.Unanimous].includes(input.approvalType)) {
+    return { ok: false, error: '승인 조건이 올바르지 않습니다.' };
+  }
+
+  const amount = validateDepositEth(input.amountEth);
+  if (!amount.ok) return { ok: false, error: amount.error };
+  if (!Number.isInteger(input.deadline) || input.deadline * 1000 <= nowMs) {
+    return { ok: false, error: '투표 마감일은 현재 시각 이후여야 합니다.' };
+  }
+
+  return {
+    ok: true,
+    amountWei: amount.wei.toString(),
+    approvalType: input.approvalType,
+    deadline: input.deadline,
+    description,
+    recipient: normalizeAddress(input.recipient),
+    title,
+  };
+}
+
 export function parseEtherToWei(value: string) {
   const [whole, fraction = ''] = value.trim().split('.');
   return BigInt(whole) * 10n ** 18n + BigInt(fraction.padEnd(18, '0'));
@@ -130,6 +190,38 @@ export function encodeCreateDaoCall(
   ].join('');
 }
 
+export function encodeCreateSpendingProposalCall(input: {
+  amountWei: string;
+  recipient: string;
+  deadline: number;
+  approvalType: ApprovalType;
+  contentHash: string;
+}) {
+  return [
+    createProposalSelector,
+    encodeUint(BigInt(ProposalType.Spending)),
+    encodeUint(BigInt(input.amountWei)),
+    encodeAddress(input.recipient),
+    encodeUint(BigInt(input.deadline)),
+    encodeUint(BigInt(input.approvalType)),
+    encodeBytes32(input.contentHash),
+  ].join('');
+}
+
+export function encodeVoteCall(proposalId: string, support: boolean) {
+  return `${voteSelector}${encodeUint(BigInt(proposalId))}${encodeUint(support ? 1n : 0n)}`;
+}
+
+export function encodeFinalizeProposalCall(proposalId: string) {
+  return `${finalizeProposalSelector}${encodeUint(BigInt(proposalId))}`;
+}
+
+export function encodeCancelProposalCall(proposalId: string, cancelReasonHash: string) {
+  return `${cancelProposalSelector}${encodeUint(BigInt(proposalId))}${encodeBytes32(
+    cancelReasonHash,
+  )}`;
+}
+
 function encodeString(value: string) {
   const bytes = new TextEncoder().encode(value);
   const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -138,13 +230,24 @@ function encodeString(value: string) {
 }
 
 function encodeAddressArray(addresses: string[]) {
-  return `${encodeUint(BigInt(addresses.length))}${addresses
-    .map((address) => address.toLowerCase().replace(/^0x/, '').padStart(64, '0'))
-    .join('')}`;
+  return `${encodeUint(BigInt(addresses.length))}${addresses.map(encodeAddress).join('')}`;
 }
 
 function encodeUint(value: bigint) {
   return value.toString(16).padStart(64, '0');
+}
+
+function encodeAddress(address: string) {
+  return normalizeAddress(address).replace(/^0x/, '').padStart(64, '0');
+}
+
+function encodeBytes32(value: string) {
+  const hex = value.toLowerCase().replace(/^0x/, '');
+  if (!/^[a-f0-9]{64}$/.test(hex)) {
+    throw new Error('bytes32 값이 올바르지 않습니다.');
+  }
+
+  return hex;
 }
 
 function padRight(hex: string) {

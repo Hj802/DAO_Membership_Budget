@@ -1,9 +1,11 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import {
   ApprovalRule,
+  ApprovalType,
   DaoStatus,
   MAX_DAO_MEMBER_COUNT,
   ProposalStatus,
+  ProposalType,
   SEPOLIA_CHAIN_ID,
 } from '@dao-budget/shared';
 import {
@@ -11,6 +13,7 @@ import {
   filterDaosByStatus,
   type ApiClient,
   type DaoDetail,
+  type ProposalDetail,
   type DaoSummary,
   type TransactionLog,
 } from './api';
@@ -23,17 +26,30 @@ import {
 } from './wallet';
 import {
   depositSelector,
+  encodeCancelProposalCall,
   encodeCreateDaoCall,
+  encodeCreateSpendingProposalCall,
+  encodeFinalizeProposalCall,
+  encodeVoteCall,
   isAddress,
   normalizeAddress,
   toQuantityHex,
   validateCreateDaoInput,
   validateDepositEth,
+  validateSpendingProposalInput,
 } from './transactions';
 import './styles.css';
 
 type DaoFilter = 'active' | 'terminated';
-type View = 'list' | 'create' | 'dashboard' | 'deposit';
+type ProposalFilter = 'all' | 'voting' | 'executable' | 'closed';
+type View =
+  | 'list'
+  | 'create'
+  | 'dashboard'
+  | 'deposit'
+  | 'proposal-create'
+  | 'proposals'
+  | 'proposal-detail';
 type TxState = {
   status: 'idle' | 'pending' | 'success' | 'error';
   message: string;
@@ -73,10 +89,13 @@ export function App({ apiClient, walletClient }: AppProps) {
   const [daoDetail, setDaoDetail] = useState<DaoDetail | null>(null);
   const [budgetHistory, setBudgetHistory] = useState<TransactionLog[]>([]);
   const [daoFilter, setDaoFilter] = useState<DaoFilter>('active');
+  const [proposalFilter, setProposalFilter] = useState<ProposalFilter>('all');
+  const [selectedProposalId, setSelectedProposalId] = useState<string | null>(null);
   const [isLoadingDaos, setIsLoadingDaos] = useState(false);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [daoError, setDaoError] = useState<string | null>(null);
   const [txState, setTxState] = useState<TxState>(idleTx);
+  const [detailRefreshNonce, setDetailRefreshNonce] = useState(0);
 
   const selectedDao = useMemo(
     () => daos.find((dao) => dao.daoAddress === selectedDaoAddress) ?? daos[0] ?? null,
@@ -105,6 +124,7 @@ export function App({ apiClient, walletClient }: AppProps) {
       }));
       setView('list');
       setSelectedDaoAddress(null);
+      setSelectedProposalId(null);
     });
     const removeChainChanged = wallet.onChainChanged((chainId) => {
       setWalletState((current) => ({ ...current, chainId, error: null }));
@@ -160,7 +180,7 @@ export function App({ apiClient, walletClient }: AppProps) {
     return () => {
       isMounted = false;
     };
-  }, [api, selectedDaoAddress, view, walletState.address]);
+  }, [api, detailRefreshNonce, selectedDaoAddress, view, walletState.address]);
 
   async function refreshDaos(address = walletState.address) {
     if (!address) return;
@@ -298,6 +318,168 @@ export function App({ apiClient, walletClient }: AppProps) {
     }
   }
 
+  async function submitSpendingProposal(input: SpendingProposalFormData) {
+    if (!walletState.address || !selectedDao) return;
+    if (selectedDao.status !== DaoStatus.Active) {
+      setTxState({ status: 'error', message: '활성 DAO에서만 지출 제안을 생성할 수 있습니다.' });
+      return;
+    }
+
+    const validation = validateSpendingProposalInput({
+      daoAddress: selectedDao.daoAddress,
+      proposer: walletState.address,
+      title: input.title,
+      description: input.description,
+      amountEth: input.amountEth,
+      recipient: input.recipient,
+      deadline: input.deadline,
+      approvalType: input.approvalType,
+    });
+    if (!validation.ok) {
+      setTxState({ status: 'error', message: validation.error });
+      return;
+    }
+
+    setTxState({
+      status: 'pending',
+      message: '제안 원문 해시 생성 및 트랜잭션 승인을 기다리는 중입니다.',
+    });
+    try {
+      const hash = await api.hashProposal({
+        schemaVersion: 1,
+        chainId: SEPOLIA_CHAIN_ID,
+        daoAddress: selectedDao.daoAddress,
+        proposalType: ProposalType.Spending,
+        proposer: walletState.address,
+        title: validation.title,
+        description: validation.description,
+        amountWei: validation.amountWei,
+        recipient: validation.recipient,
+        deadline: validation.deadline,
+        approvalType: validation.approvalType,
+      });
+      const txHash = await wallet.sendTransaction({
+        from: walletState.address,
+        to: selectedDao.daoAddress,
+        data: encodeCreateSpendingProposalCall({
+          amountWei: validation.amountWei,
+          recipient: validation.recipient,
+          deadline: validation.deadline,
+          approvalType: validation.approvalType,
+          contentHash: hash.contentHash,
+        }),
+      });
+      const proposalId = getNextProposalId(daoDetail?.proposals ?? []);
+      await api.saveProposalDetail({
+        schemaVersion: 1,
+        chainId: SEPOLIA_CHAIN_ID,
+        daoAddress: selectedDao.daoAddress,
+        proposalType: ProposalType.Spending,
+        proposer: walletState.address,
+        title: validation.title,
+        description: validation.description,
+        amountWei: validation.amountWei,
+        recipient: validation.recipient,
+        deadline: validation.deadline,
+        approvalType: validation.approvalType,
+        proposalId,
+        contentHash: hash.contentHash,
+      });
+      setTxState({
+        status: 'success',
+        message: '지출 제안 트랜잭션이 전송되었고 제안 상세가 저장되었습니다.',
+        txHash,
+      });
+      setView('proposals');
+      setDetailRefreshNonce((value) => value + 1);
+    } catch (error) {
+      setTxState({
+        status: 'error',
+        message: error instanceof Error ? error.message : '지출 제안 생성이 실패했습니다.',
+      });
+    }
+  }
+
+  async function submitVote(proposalId: string, support: boolean) {
+    if (!walletState.address || !selectedDao) return;
+
+    setTxState({ status: 'pending', message: '투표 트랜잭션 승인을 기다리는 중입니다.' });
+    try {
+      const txHash = await wallet.sendTransaction({
+        from: walletState.address,
+        to: selectedDao.daoAddress,
+        data: encodeVoteCall(proposalId, support),
+      });
+      setTxState({
+        status: 'success',
+        message: '투표 트랜잭션이 전송되었습니다. 이벤트 동기화 후 투표 현황에 반영됩니다.',
+        txHash,
+      });
+      setDetailRefreshNonce((value) => value + 1);
+    } catch (error) {
+      setTxState({
+        status: 'error',
+        message: error instanceof Error ? error.message : '투표 트랜잭션이 실패했습니다.',
+      });
+    }
+  }
+
+  async function submitFinalize(proposalId: string) {
+    if (!walletState.address || !selectedDao) return;
+
+    setTxState({ status: 'pending', message: '결과 확정 트랜잭션 승인을 기다리는 중입니다.' });
+    try {
+      const txHash = await wallet.sendTransaction({
+        from: walletState.address,
+        to: selectedDao.daoAddress,
+        data: encodeFinalizeProposalCall(proposalId),
+      });
+      setTxState({
+        status: 'success',
+        message: '결과 확정 트랜잭션이 전송되었습니다. 이벤트 동기화 후 상태가 반영됩니다.',
+        txHash,
+      });
+      setDetailRefreshNonce((value) => value + 1);
+    } catch (error) {
+      setTxState({
+        status: 'error',
+        message: error instanceof Error ? error.message : '결과 확정 트랜잭션이 실패했습니다.',
+      });
+    }
+  }
+
+  async function submitCancelProposal(proposalId: string, cancelReason: string) {
+    if (!walletState.address || !selectedDao) return;
+    if (!cancelReason.trim()) {
+      setTxState({ status: 'error', message: '취소 사유를 입력하세요.' });
+      return;
+    }
+
+    setTxState({
+      status: 'pending',
+      message: '취소 사유 해시 생성 및 트랜잭션 승인을 기다리는 중입니다.',
+    });
+    try {
+      const cancelReasonHash = await api.hashCancelReason(cancelReason);
+      const txHash = await wallet.sendTransaction({
+        from: walletState.address,
+        to: selectedDao.daoAddress,
+        data: encodeCancelProposalCall(proposalId, cancelReasonHash),
+      });
+      setTxState({
+        status: 'success',
+        message: '제안 취소 트랜잭션이 전송되었습니다. 이벤트 동기화 후 상태가 반영됩니다.',
+        txHash,
+      });
+      setDetailRefreshNonce((value) => value + 1);
+    } catch (error) {
+      setTxState({
+        status: 'error',
+        message: error instanceof Error ? error.message : '제안 취소 트랜잭션이 실패했습니다.',
+      });
+    }
+  }
+
   if (!walletState.address) {
     return (
       <DisconnectedView
@@ -322,10 +504,21 @@ export function App({ apiClient, walletClient }: AppProps) {
       onCreateDao={submitCreateDao}
       onDeposit={submitDeposit}
       onFilterChange={setDaoFilter}
+      onProposalFilterChange={setProposalFilter}
       onRefresh={() => refreshDaos()}
+      onCancelProposal={submitCancelProposal}
+      onCreateProposal={submitSpendingProposal}
+      onFinalizeProposal={submitFinalize}
+      onVote={submitVote}
       onSelectDao={(daoAddress) => {
         setSelectedDaoAddress(daoAddress);
         setView('dashboard');
+        setSelectedProposalId(null);
+        setTxState(idleTx);
+      }}
+      onSelectProposal={(proposalId) => {
+        setSelectedProposalId(proposalId);
+        setView('proposal-detail');
         setTxState(idleTx);
       }}
       onSwitchNetwork={switchToSepolia}
@@ -333,6 +526,8 @@ export function App({ apiClient, walletClient }: AppProps) {
         setView(nextView);
         setTxState(idleTx);
       }}
+      proposalFilter={proposalFilter}
+      selectedProposalId={selectedProposalId}
       selectedDao={selectedDao}
       txState={txState}
       view={view}
@@ -403,12 +598,20 @@ type ConnectedLayoutProps = {
   isLoadingDaos: boolean;
   isLoadingDetail: boolean;
   onCreateDao: (input: CreateDaoFormData) => Promise<void>;
+  onCreateProposal: (input: SpendingProposalFormData) => Promise<void>;
+  onCancelProposal: (proposalId: string, cancelReason: string) => Promise<void>;
   onDeposit: (amountEth: string) => Promise<void>;
   onFilterChange: (filter: DaoFilter) => void;
+  onFinalizeProposal: (proposalId: string) => Promise<void>;
+  onProposalFilterChange: (filter: ProposalFilter) => void;
   onRefresh: () => void;
   onSelectDao: (daoAddress: string) => void;
+  onSelectProposal: (proposalId: string) => void;
   onSwitchNetwork: () => void;
   onViewChange: (view: View) => void;
+  onVote: (proposalId: string, support: boolean) => Promise<void>;
+  proposalFilter: ProposalFilter;
+  selectedProposalId: string | null;
   selectedDao: DaoSummary | null;
   txState: TxState;
   view: View;
@@ -464,6 +667,8 @@ export function ConnectedLayout(props: ConnectedLayoutProps) {
             dao={props.daoDetail ?? props.selectedDao}
             isLoading={props.isLoadingDetail}
             onDeposit={() => props.onViewChange('deposit')}
+            onCreateProposal={() => props.onViewChange('proposal-create')}
+            onOpenProposals={() => props.onViewChange('proposals')}
           />
         ) : null}
         {props.view === 'deposit' ? (
@@ -473,6 +678,36 @@ export function ConnectedLayout(props: ConnectedLayoutProps) {
             isPending={props.txState.status === 'pending'}
             onBack={() => props.onViewChange('dashboard')}
             onDeposit={props.onDeposit}
+          />
+        ) : null}
+        {props.view === 'proposal-create' ? (
+          <SpendingProposalCreateView
+            dao={props.daoDetail ?? props.selectedDao}
+            isPending={props.txState.status === 'pending'}
+            onBack={() => props.onViewChange('dashboard')}
+            onSubmit={props.onCreateProposal}
+          />
+        ) : null}
+        {props.view === 'proposals' ? (
+          <ProposalListView
+            dao={props.daoDetail ?? props.selectedDao}
+            filter={props.proposalFilter}
+            onCreate={() => props.onViewChange('proposal-create')}
+            onFilterChange={props.onProposalFilterChange}
+            onOpen={props.onSelectProposal}
+          />
+        ) : null}
+        {props.view === 'proposal-detail' ? (
+          <ProposalDetailView
+            budgetHistory={props.budgetHistory}
+            currentAddress={props.address}
+            dao={props.daoDetail ?? props.selectedDao}
+            isPending={props.txState.status === 'pending'}
+            onBack={() => props.onViewChange('proposals')}
+            onCancel={props.onCancelProposal}
+            onFinalize={props.onFinalizeProposal}
+            onVote={props.onVote}
+            proposalId={props.selectedProposalId}
           />
         ) : null}
       </main>
@@ -517,7 +752,13 @@ function Topbar({
         >
           대시보드
         </button>
-        <button disabled>제안</button>
+        <button
+          aria-current={view === 'proposals' || view === 'proposal-detail' ? 'page' : undefined}
+          disabled={!selectedDao}
+          onClick={() => onViewChange('proposals')}
+        >
+          제안
+        </button>
         <button disabled>예산 내역</button>
       </nav>
       <div className="topbar-actions">
@@ -775,12 +1016,16 @@ function DashboardView({
   budgetHistory,
   dao,
   isLoading,
+  onCreateProposal,
   onDeposit,
+  onOpenProposals,
 }: {
   budgetHistory: TransactionLog[];
   dao: DaoSummary | DaoDetail | null;
   isLoading: boolean;
+  onCreateProposal: () => void;
   onDeposit: () => void;
+  onOpenProposals: () => void;
 }) {
   if (!dao) {
     return (
@@ -809,11 +1054,11 @@ function DashboardView({
           <button className="secondary-button" disabled={disabled} onClick={onDeposit}>
             회비 입금
           </button>
-          <button className="primary-button" disabled>
+          <button className="primary-button" disabled={disabled} onClick={onCreateProposal}>
             지출 제안
           </button>
-          <button className="secondary-button" disabled>
-            예산 내역
+          <button className="secondary-button" onClick={onOpenProposals}>
+            제안 목록
           </button>
         </div>
       </div>
@@ -834,7 +1079,7 @@ function DashboardView({
       <section className="panel-table">
         <div className="panel-title">
           <h2>최근 제안</h2>
-          <button className="text-button" disabled>
+          <button className="text-button" onClick={onOpenProposals}>
             전체 보기
           </button>
         </div>
@@ -994,6 +1239,383 @@ function DepositView({
   );
 }
 
+type SpendingProposalFormData = {
+  title: string;
+  description: string;
+  amountEth: string;
+  recipient: string;
+  deadline: number;
+  approvalType: ApprovalType;
+};
+
+function SpendingProposalCreateView({
+  dao,
+  isPending,
+  onBack,
+  onSubmit,
+}: {
+  dao: DaoSummary | DaoDetail | null;
+  isPending: boolean;
+  onBack: () => void;
+  onSubmit: (input: SpendingProposalFormData) => Promise<void>;
+}) {
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [amountEth, setAmountEth] = useState('');
+  const [recipient, setRecipient] = useState('');
+  const [deadlineLocal, setDeadlineLocal] = useState('');
+  const [unanimous, setUnanimous] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const disabled = !dao || dao.status !== DaoStatus.Active;
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const deadline = Math.floor(new Date(deadlineLocal).getTime() / 1000);
+    if (!Number.isFinite(deadline)) {
+      setFormError('투표 마감일을 입력하세요.');
+      return;
+    }
+
+    setFormError(null);
+    void onSubmit({
+      title,
+      description,
+      amountEth,
+      recipient,
+      deadline,
+      approvalType: unanimous ? ApprovalType.Unanimous : ApprovalType.Default,
+    });
+  }
+
+  return (
+    <form className="form-page" onSubmit={submit}>
+      <button className="text-button" onClick={onBack} type="button">
+        대시보드로 돌아가기
+      </button>
+      <div className="content-header">
+        <div>
+          <h1>지출 제안 생성</h1>
+          <p>제안 원문은 canonical JSON으로 해시되어 온체인 contentHash와 연결됩니다.</p>
+        </div>
+      </div>
+      {disabled ? (
+        <div className="alert warning">활성 DAO에서만 지출 제안을 생성할 수 있습니다.</div>
+      ) : null}
+      {formError ? <div className="alert danger">{formError}</div> : null}
+      <section className="form-grid">
+        <div className="form-panel wide">
+          <label htmlFor="proposal-title">제안 제목</label>
+          <input
+            id="proposal-title"
+            onChange={(event) => setTitle(event.target.value)}
+            value={title}
+          />
+          <label htmlFor="proposal-description">설명</label>
+          <textarea
+            id="proposal-description"
+            onChange={(event) => setDescription(event.target.value)}
+            rows={5}
+            value={description}
+          />
+        </div>
+        <div className="form-panel">
+          <label htmlFor="proposal-amount">금액 (ETH)</label>
+          <input
+            id="proposal-amount"
+            inputMode="decimal"
+            onChange={(event) => setAmountEth(event.target.value)}
+            placeholder="0.10"
+            value={amountEth}
+          />
+          <label htmlFor="proposal-recipient">수신자 주소</label>
+          <input
+            className="mono-input"
+            id="proposal-recipient"
+            onChange={(event) => setRecipient(event.target.value)}
+            placeholder="0x..."
+            value={recipient}
+          />
+          <label htmlFor="proposal-deadline">투표 마감</label>
+          <input
+            id="proposal-deadline"
+            onChange={(event) => setDeadlineLocal(event.target.value)}
+            type="datetime-local"
+            value={deadlineLocal}
+          />
+          <label className="checkbox-row">
+            <input
+              checked={unanimous}
+              onChange={(event) => setUnanimous(event.target.checked)}
+              type="checkbox"
+            />
+            <span>이 제안은 만장일치 필요</span>
+          </label>
+        </div>
+      </section>
+      <div className="form-actions">
+        <button className="secondary-button" onClick={onBack} type="button">
+          취소
+        </button>
+        <button className="primary-button" disabled={disabled || isPending} type="submit">
+          {isPending ? '트랜잭션 대기 중' : '제안 생성'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function ProposalListView({
+  dao,
+  filter,
+  onCreate,
+  onFilterChange,
+  onOpen,
+}: {
+  dao: DaoSummary | DaoDetail | null;
+  filter: ProposalFilter;
+  onCreate: () => void;
+  onFilterChange: (filter: ProposalFilter) => void;
+  onOpen: (proposalId: string) => void;
+}) {
+  const proposals = filterProposals(
+    'proposals' in (dao ?? {}) ? (dao as DaoDetail).proposals : [],
+    filter,
+  );
+
+  return (
+    <section className="dashboard">
+      <div className="content-header">
+        <div>
+          <h1>제안 목록</h1>
+          <p>DAO 구성원이 등록한 지출 제안을 상태별로 확인합니다.</p>
+        </div>
+        <div className="header-actions">
+          <div className="segmented-control" role="tablist" aria-label="제안 상태 필터">
+            <button
+              aria-selected={filter === 'all'}
+              role="tab"
+              onClick={() => onFilterChange('all')}
+            >
+              전체
+            </button>
+            <button
+              aria-selected={filter === 'voting'}
+              role="tab"
+              onClick={() => onFilterChange('voting')}
+            >
+              투표 중
+            </button>
+            <button
+              aria-selected={filter === 'executable'}
+              role="tab"
+              onClick={() => onFilterChange('executable')}
+            >
+              집행 가능
+            </button>
+            <button
+              aria-selected={filter === 'closed'}
+              role="tab"
+              onClick={() => onFilterChange('closed')}
+            >
+              종료됨
+            </button>
+          </div>
+          <button
+            className="primary-button"
+            disabled={dao?.status !== DaoStatus.Active}
+            onClick={onCreate}
+          >
+            지출 제안
+          </button>
+        </div>
+      </div>
+      <section className="panel-table">
+        {proposals.length > 0 ? (
+          proposals.map((proposal) => (
+            <button
+              className="list-row proposal-row"
+              key={proposal.proposalId}
+              onClick={() => onOpen(proposal.proposalId)}
+            >
+              <div>
+                <strong>{proposal.title}</strong>
+                <span>
+                  {proposal.amountWei ? `${formatWeiToEth(proposal.amountWei)} ETH` : '-'} ·{' '}
+                  {proposal.recipient ? formatAddress(proposal.recipient) : '-'}
+                </span>
+              </div>
+              <span className="status-badge">{proposalStatusLabel(proposal.status)}</span>
+            </button>
+          ))
+        ) : (
+          <p className="muted">표시할 제안이 없습니다.</p>
+        )}
+      </section>
+    </section>
+  );
+}
+
+function ProposalDetailView({
+  budgetHistory,
+  currentAddress,
+  dao,
+  isPending,
+  onBack,
+  onCancel,
+  onFinalize,
+  onVote,
+  proposalId,
+}: {
+  budgetHistory: TransactionLog[];
+  currentAddress: string;
+  dao: DaoSummary | DaoDetail | null;
+  isPending: boolean;
+  onBack: () => void;
+  onCancel: (proposalId: string, reason: string) => Promise<void>;
+  onFinalize: (proposalId: string) => Promise<void>;
+  onVote: (proposalId: string, support: boolean) => Promise<void>;
+  proposalId: string | null;
+}) {
+  const [cancelReason, setCancelReason] = useState('');
+  const proposal =
+    dao && 'proposals' in dao
+      ? (dao.proposals.find((item) => item.proposalId === proposalId) ?? null)
+      : null;
+
+  if (!dao || !proposal) {
+    return (
+      <div className="empty-state">
+        <h1>제안을 찾을 수 없습니다.</h1>
+        <button className="secondary-button" onClick={onBack}>
+          제안 목록으로 돌아가기
+        </button>
+      </div>
+    );
+  }
+
+  const votes = summarizeVotes(budgetHistory, proposal.proposalId, dao.memberCount);
+  const now = Math.floor(Date.now() / 1000);
+  const isVoting = (proposal.status ?? ProposalStatus.Voting) === ProposalStatus.Voting;
+  const isBeforeDeadline = now < proposal.deadline;
+  const hasVoted = votes.voters.has(normalizeAddress(currentAddress));
+  const canVote = isVoting && isBeforeDeadline && !hasVoted && dao.status === DaoStatus.Active;
+  const canFinalize = isVoting && !isBeforeDeadline;
+  const canCancel =
+    isVoting &&
+    isBeforeDeadline &&
+    proposal.proposer?.toLowerCase() === currentAddress.toLowerCase();
+
+  return (
+    <section className="dashboard">
+      <button className="text-button" onClick={onBack}>
+        제안 목록으로 돌아가기
+      </button>
+      <div className="dashboard-header">
+        <div>
+          <h1>{proposal.title}</h1>
+          <p>
+            {proposal.amountWei ? `${formatWeiToEth(proposal.amountWei)} ETH` : '-'} · 수신자{' '}
+            {proposal.recipient ? formatAddress(proposal.recipient) : '-'} ·{' '}
+            {proposalStatusLabel(proposal.status)}
+          </p>
+        </div>
+      </div>
+      {!isBeforeDeadline && isVoting ? (
+        <div className="alert warning">
+          투표 마감 시간이 지났습니다. 결과 확정을 실행할 수 있습니다.
+        </div>
+      ) : null}
+      {hasVoted ? <div className="alert warning">이미 이 제안에 투표했습니다.</div> : null}
+      <section className="form-grid">
+        <div className="form-panel wide">
+          <h2>제안 상세</h2>
+          <p>{proposal.description ?? '설명이 없습니다.'}</p>
+          <dl className="summary-list">
+            <div>
+              <dt>제안자</dt>
+              <dd>{proposal.proposer ? formatAddress(proposal.proposer) : '-'}</dd>
+            </div>
+            <div>
+              <dt>마감</dt>
+              <dd>{new Date(proposal.deadline * 1000).toLocaleString('ko-KR')}</dd>
+            </div>
+            <div>
+              <dt>승인 조건</dt>
+              <dd>
+                {proposal.approvalType === ApprovalType.Unanimous ? '만장일치' : 'DAO 기본 기준'}
+              </dd>
+            </div>
+            <div>
+              <dt>contentHash</dt>
+              <dd>{proposal.contentHash ? formatAddress(proposal.contentHash) : '-'}</dd>
+            </div>
+          </dl>
+        </div>
+        <div className="form-panel">
+          <h2>투표 현황</h2>
+          <dl className="summary-list">
+            <div>
+              <dt>찬성</dt>
+              <dd>{votes.yes}명</dd>
+            </div>
+            <div>
+              <dt>반대</dt>
+              <dd>{votes.no}명</dd>
+            </div>
+            <div>
+              <dt>미투표</dt>
+              <dd>{votes.notVoted}명</dd>
+            </div>
+          </dl>
+          <div className="action-stack">
+            <button
+              className="primary-button"
+              disabled={!canVote || isPending}
+              onClick={() => onVote(proposal.proposalId, true)}
+            >
+              찬성
+            </button>
+            <button
+              className="secondary-button"
+              disabled={!canVote || isPending}
+              onClick={() => onVote(proposal.proposalId, false)}
+            >
+              반대
+            </button>
+            <button
+              className="secondary-button"
+              disabled={!canFinalize || isPending}
+              onClick={() => onFinalize(proposal.proposalId)}
+            >
+              결과 확정
+            </button>
+          </div>
+        </div>
+      </section>
+      {canCancel ? (
+        <section className="form-panel">
+          <h2>제안 취소</h2>
+          <div className="inline-form">
+            <input
+              onChange={(event) => setCancelReason(event.target.value)}
+              placeholder="취소 사유"
+              value={cancelReason}
+            />
+            <button
+              className="secondary-button"
+              disabled={isPending}
+              onClick={() => onCancel(proposal.proposalId, cancelReason)}
+              type="button"
+            >
+              취소 실행
+            </button>
+          </div>
+        </section>
+      ) : null}
+    </section>
+  );
+}
+
 function ValueCard({ title, body }: { title: string; body: string }) {
   return (
     <article className="value-card">
@@ -1142,6 +1764,56 @@ function summarizeBudget(history: TransactionLog[]) {
     totalDepositsEth: formatWeiToEth(totalDeposits.toString()),
     totalExecutedEth: formatWeiToEth(totalExecuted.toString()),
   };
+}
+
+function summarizeVotes(history: TransactionLog[], proposalId: string, memberCount: number) {
+  const votes = history.filter(
+    (log) => log.eventType === 'VoteCast' && log.proposalId === proposalId && log.actor,
+  );
+  const voters = new Set(votes.map((vote) => normalizeAddress(vote.actor ?? '')));
+  const yes = votes.filter(
+    (vote) => vote.status === 'vote:yes' || vote.status === 'support:true',
+  ).length;
+  const no = votes.filter(
+    (vote) => vote.status === 'vote:no' || vote.status === 'support:false',
+  ).length;
+
+  return {
+    no,
+    notVoted: Math.max(memberCount - voters.size, 0),
+    voters,
+    yes,
+  };
+}
+
+function filterProposals(proposals: ProposalDetail[], filter: ProposalFilter) {
+  if (filter === 'all') return proposals;
+  if (filter === 'voting') {
+    return proposals.filter(
+      (proposal) => (proposal.status ?? ProposalStatus.Voting) === ProposalStatus.Voting,
+    );
+  }
+  if (filter === 'executable') {
+    return proposals.filter((proposal) => proposal.status === ProposalStatus.Executable);
+  }
+
+  return proposals.filter((proposal) =>
+    [
+      ProposalStatus.Canceled,
+      ProposalStatus.Rejected,
+      ProposalStatus.Executed,
+      ProposalStatus.ExecutionFailed,
+    ].includes(proposal.status ?? ProposalStatus.Voting),
+  );
+}
+
+function getNextProposalId(proposals: ProposalDetail[]) {
+  const maxProposalId = proposals.reduce((max, proposal) => {
+    const id = Number(proposal.proposalId);
+    return Number.isFinite(id) ? Math.max(max, id) : max;
+  }, 0);
+
+  return String(maxProposalId + 1);
 }
 
 function formatWeiToEth(wei: string) {
