@@ -1,0 +1,27 @@
+{
+  "name": "dao-membership-budget",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "npm@10.9.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:api": "npm run dev -w @dao-budget/api",
+    "dev:web": "npm run dev -w @dao-budget/web",
+    "format": "prettier --check \"{apps,packages}/**/*.{ts,tsx,json}\" \"*.json\" \"README.md\"",
+    "format:write": "prettier --write \"{apps,packages}/**/*.{ts,tsx,json}\" \"*.json\" \"README.md\"",
+    "lint": "npm run format && npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "validate:env": "node packages/scripts/validate-env.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,21 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model DaoCache {
+  id              String    @id @default(cuid())
+  contractAddress String    @unique
+  factoryAddress  String
+  name            String
+  status          Int
+  memberCount     Int
+  approvalRule    Int
+  createdAt       DateTime
+  terminatedAt    DateTime?
+  syncedBlock     Int
+}
