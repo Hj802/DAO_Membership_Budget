@@ -53,10 +53,14 @@ contract DAOVault {
         bytes32 contentHash;
         bytes32 cancelReasonHash;
         uint256 canceledAt;
+        uint256 yesVotes;
+        uint256 noVotes;
     }
 
     uint256 private _nextProposalId = 1;
     mapping(uint256 => Proposal) private _proposals;
+    mapping(uint256 => mapping(address => bool)) private _hasVoted;
+    mapping(uint256 => mapping(address => bool)) private _voteSupport;
 
     event DepositReceived(
         address indexed daoAddress,
@@ -83,6 +87,21 @@ contract DAOVault {
         bytes32 cancelReasonHash,
         uint256 timestamp
     );
+    event VoteCast(
+        address indexed daoAddress,
+        uint256 indexed proposalId,
+        address indexed voter,
+        bool support,
+        uint256 timestamp
+    );
+    event ProposalFinalized(
+        address indexed daoAddress,
+        uint256 indexed proposalId,
+        uint8 finalStatus,
+        uint256 yesVotes,
+        uint256 noVotes,
+        uint256 timestamp
+    );
 
     error EmptyName();
     error InvalidCreator();
@@ -106,6 +125,8 @@ contract DAOVault {
     error ProposalNotVoting(ProposalStatus currentStatus);
     error ProposalDeadlinePassed();
     error InvalidCancelReasonHash();
+    error AlreadyVoted(address voter);
+    error ProposalDeadlineNotReached();
 
     constructor(
         string memory daoName,
@@ -150,6 +171,18 @@ contract DAOVault {
         if (!_proposalExists(proposalId)) revert ProposalNotFound(proposalId);
 
         return _proposals[proposalId];
+    }
+
+    function hasVoted(uint256 proposalId, address voter) external view returns (bool) {
+        if (!_proposalExists(proposalId)) revert ProposalNotFound(proposalId);
+
+        return _hasVoted[proposalId][voter];
+    }
+
+    function getVote(uint256 proposalId, address voter) external view returns (bool hasCast, bool support) {
+        if (!_proposalExists(proposalId)) revert ProposalNotFound(proposalId);
+
+        return (_hasVoted[proposalId][voter], _voteSupport[proposalId][voter]);
     }
 
     function deposit() external payable {
@@ -205,7 +238,9 @@ contract DAOVault {
             proposalStatus: ProposalStatus.Voting,
             contentHash: contentHash,
             cancelReasonHash: bytes32(0),
-            canceledAt: 0
+            canceledAt: 0,
+            yesVotes: 0,
+            noVotes: 0
         });
 
         emit ProposalCreated(
@@ -250,6 +285,60 @@ contract DAOVault {
         );
     }
 
+    function vote(uint256 proposalId, bool support) external {
+        if (!_proposalExists(proposalId)) revert ProposalNotFound(proposalId);
+        if (!isMember[msg.sender]) revert NotMember(msg.sender);
+
+        Proposal storage proposal = _proposals[proposalId];
+
+        if (proposal.proposalStatus != ProposalStatus.Voting) {
+            revert ProposalNotVoting(proposal.proposalStatus);
+        }
+        if (block.timestamp >= proposal.deadline) revert ProposalDeadlinePassed();
+        if (_hasVoted[proposalId][msg.sender]) revert AlreadyVoted(msg.sender);
+
+        _hasVoted[proposalId][msg.sender] = true;
+        _voteSupport[proposalId][msg.sender] = support;
+
+        if (support) {
+            proposal.yesVotes += 1;
+        } else {
+            proposal.noVotes += 1;
+        }
+
+        emit VoteCast(address(this), proposalId, msg.sender, support, block.timestamp);
+    }
+
+    function finalizeProposal(uint256 proposalId) external {
+        if (!_proposalExists(proposalId)) revert ProposalNotFound(proposalId);
+
+        Proposal storage proposal = _proposals[proposalId];
+
+        if (proposal.proposalStatus != ProposalStatus.Voting) {
+            revert ProposalNotVoting(proposal.proposalStatus);
+        }
+        if (block.timestamp < proposal.deadline) revert ProposalDeadlineNotReached();
+
+        ProposalStatus finalStatus = _isProposalApproved(proposal)
+            ? ProposalStatus.Executable
+            : ProposalStatus.Rejected;
+
+        proposal.proposalStatus = finalStatus;
+
+        if (proposal.proposalType == ProposalType.Termination && finalStatus == ProposalStatus.Rejected) {
+            status = DaoStatus.Active;
+        }
+
+        emit ProposalFinalized(
+            address(this),
+            proposalId,
+            uint8(finalStatus),
+            proposal.yesVotes,
+            proposal.noVotes,
+            block.timestamp
+        );
+    }
+
     function _addMember(address member) private {
         if (member == address(0)) revert InvalidMember();
         if (isMember[member]) revert DuplicateMember(member);
@@ -273,5 +362,19 @@ contract DAOVault {
                 revert ActiveProposalExists(proposalId);
             }
         }
+    }
+
+    function _isProposalApproved(Proposal storage proposal) private view returns (bool) {
+        uint256 totalMemberCount = _members.length;
+
+        if (proposal.approvalType == ApprovalType.Unanimous) {
+            return proposal.yesVotes == totalMemberCount;
+        }
+
+        if (approvalRule == ApprovalRule.Majority) {
+            return proposal.yesVotes * 2 > totalMemberCount;
+        }
+
+        return proposal.yesVotes * 3 >= totalMemberCount * 2;
     }
 }
