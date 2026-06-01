@@ -8,14 +8,134 @@ datasource db {
 }
 
 model DaoCache {
-  id              String    @id @default(cuid())
-  contractAddress String    @unique
-  factoryAddress  String
+  daoId           String    @id @default(cuid()) @map("dao_id")
+  contractAddress String    @unique @map("contract_address")
+  factoryAddress  String    @map("factory_address")
   name            String
   status          Int
-  memberCount     Int
-  approvalRule    Int
-  createdAt       DateTime
-  terminatedAt    DateTime?
-  syncedBlock     Int
+  memberCount     Int       @map("member_count")
+  approvalRule    Int       @map("approval_rule")
+  createdAt       DateTime  @map("created_at")
+  terminatedAt    DateTime? @map("terminated_at")
+  syncedBlock     BigInt    @map("synced_block")
+
+  members       DaoMemberCache[]
+  proposals     ProposalDetail[]
+  cancellations ProposalCancelDetail[]
+  evidenceFiles EvidenceFile[]
+  transactions  TransactionLog[]
+
+  @@map("dao_cache")
+}
+
+model DaoMemberCache {
+  id            String   @id @default(cuid())
+  daoId         String   @map("dao_id")
+  walletAddress String   @map("wallet_address")
+  joinedAt      DateTime @map("joined_at")
+  isActive      Boolean  @default(true) @map("is_active")
+
+  dao DaoCache @relation(fields: [daoId], references: [daoId], onDelete: Cascade)
+
+  @@unique([daoId, walletAddress])
+  @@index([walletAddress])
+  @@map("dao_members_cache")
+}
+
+model ProposalDetail {
+  id           String    @id @default(cuid())
+  proposalId   BigInt    @map("proposal_id")
+  daoId        String    @map("dao_id")
+  proposalType Int       @map("proposal_type")
+  title        String
+  description  String
+  amountWei    String?   @map("amount_wei")
+  recipient    String?
+  deadline     BigInt
+  approvalType Int       @map("approval_type")
+  contentHash  String    @map("content_hash")
+  createdAt    DateTime  @map("created_at")
+
+  dao          DaoCache                @relation(fields: [daoId], references: [daoId], onDelete: Cascade)
+  cancellation ProposalCancelDetail?
+  evidence     EvidenceFile[]
+  transactions TransactionLog[]
+
+  @@unique([daoId, proposalId])
+  @@index([contentHash])
+  @@map("proposal_details")
+}
+
+model ProposalCancelDetail {
+  id               String   @id @default(cuid())
+  proposalDetailId String   @unique @map("proposal_detail_id")
+  proposalId        BigInt   @map("proposal_id")
+  daoId             String   @map("dao_id")
+  cancelReason      String   @map("cancel_reason")
+  cancelReasonHash  String   @map("cancel_reason_hash")
+  canceledBy        String   @map("canceled_by")
+  canceledAt        DateTime @map("canceled_at")
+
+  dao      DaoCache       @relation(fields: [daoId], references: [daoId], onDelete: Cascade)
+  proposal ProposalDetail @relation(fields: [proposalDetailId], references: [id], onDelete: Cascade)
+
+  @@unique([daoId, proposalId])
+  @@index([cancelReasonHash])
+  @@map("proposal_cancel_details")
+}
+
+model EvidenceFile {
+  evidenceId   String   @id @default(cuid()) @map("evidence_id")
+  daoId        String   @map("dao_id")
+  proposalId   BigInt   @map("proposal_id")
+  proposalKey  String?  @map("proposal_key")
+  uploader     String
+  evidenceType String   @map("evidence_type")
+  r2ObjectKey  String   @unique @map("r2_object_key")
+  mimeType     String   @map("mime_type")
+  fileSize     Int      @map("file_size")
+  description  String?
+  contentHash  String   @map("content_hash")
+  createdAt    DateTime @map("created_at")
+
+  dao      DaoCache        @relation(fields: [daoId], references: [daoId], onDelete: Cascade)
+  proposal ProposalDetail? @relation(fields: [proposalKey], references: [id], onDelete: SetNull)
+
+  @@index([daoId, proposalId])
+  @@index([contentHash])
+  @@map("evidence_files")
+}
+
+model TransactionLog {
+  id          String   @id @default(cuid())
+  txHash      String   @map("tx_hash")
+  logIndex    Int      @map("log_index")
+  daoId       String   @map("dao_id")
+  proposalKey String?  @map("proposal_key")
+  proposalId  BigInt?  @map("proposal_id")
+  eventType   String   @map("event_type")
+  actor       String?
+  amountWei   String?  @map("amount_wei")
+  status      String
+  blockNumber BigInt   @map("block_number")
+  createdAt   DateTime @map("created_at")
+
+  dao      DaoCache        @relation(fields: [daoId], references: [daoId], onDelete: Cascade)
+  proposal ProposalDetail? @relation(fields: [proposalKey], references: [id], onDelete: SetNull)
+
+  @@unique([txHash, logIndex])
+  @@index([daoId, proposalId])
+  @@index([eventType])
+  @@map("transaction_logs")
+}
+
+model SyncState {
+  id              String   @id @default(cuid())
+  source          String
+  contractAddress String   @map("contract_address")
+  lastSyncedBlock BigInt   @map("last_synced_block")
+  updatedAt       DateTime @map("updated_at")
+
+  @@unique([source, contractAddress])
+  @@map("sync_state")
 }

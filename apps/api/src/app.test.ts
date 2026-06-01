@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { handleRequest } from './app';
+import { handleRequest, handleScheduledSync } from './app';
 
 describe('api scaffold', () => {
   it('responds to health checks with the Workers-compatible handler', async () => {
@@ -32,6 +32,17 @@ describe('api scaffold', () => {
     expect(body).toEqual({
       ok: false,
       error: 'Not found',
+    });
+  });
+
+  it('exposes a Workers Cron sync entrypoint with Cloudflare binding metadata', async () => {
+    await expect(handleScheduledSync()).resolves.toEqual({
+      ok: true,
+      skipped: true,
+      reason: 'missing-sync-bindings',
+      chainId: 11155111,
+      maxBlockRange: '500',
+      r2Binding: 'DAO_BUDGET_EVIDENCE_BUCKET',
     });
   });
 });

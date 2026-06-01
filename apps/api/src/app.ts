@@ -1,5 +1,8 @@
 import { SEPOLIA_CHAIN_ID } from '@dao-budget/shared';
 
+const maxSyncBlockRange = 500n;
+const r2EvidenceBucketBinding = 'DAO_BUDGET_EVIDENCE_BUCKET';
+
 const jsonHeaders = {
   'content-type': 'application/json; charset=utf-8',
   'access-control-allow-origin': '*',
@@ -45,6 +48,49 @@ export async function handleRequest(request: Request): Promise<Response> {
   );
 }
 
+export type ScheduledSyncEnvironment = {
+  RPC_URL?: string;
+  FACTORY_CONTRACT_ADDRESS?: string;
+  DAO_BUDGET_DB?: unknown;
+  DAO_BUDGET_EVIDENCE_BUCKET?: unknown;
+};
+
+export type ScheduledSyncResult = {
+  ok: boolean;
+  skipped: boolean;
+  reason?: string;
+  chainId: number;
+  maxBlockRange: string;
+  r2Binding: string;
+};
+
+export async function handleScheduledSync(
+  env: ScheduledSyncEnvironment = {},
+): Promise<ScheduledSyncResult> {
+  if (!env.RPC_URL || !env.FACTORY_CONTRACT_ADDRESS || !env.DAO_BUDGET_DB) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: 'missing-sync-bindings',
+      chainId: SEPOLIA_CHAIN_ID,
+      maxBlockRange: maxSyncBlockRange.toString(),
+      r2Binding: r2EvidenceBucketBinding,
+    };
+  }
+
+  return {
+    ok: true,
+    skipped: true,
+    reason: 'sync-adapter-pending-phase-9',
+    chainId: SEPOLIA_CHAIN_ID,
+    maxBlockRange: maxSyncBlockRange.toString(),
+    r2Binding: r2EvidenceBucketBinding,
+  };
+}
+
 export default {
   fetch: handleRequest,
+  scheduled: async (_event: unknown, env: ScheduledSyncEnvironment) => {
+    await handleScheduledSync(env);
+  },
 };
