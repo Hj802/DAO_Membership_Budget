@@ -5,12 +5,14 @@ import {
   ApprovalType,
   DaoStatus,
   ProposalStatus,
+  ProposalType,
   SEPOLIA_CHAIN_ID,
 } from '@dao-budget/shared';
 import {
   createApiClient,
   filterDaosByStatus,
   type DaoDetail,
+  type EvidenceFileRecord,
   type DaoSummary,
   type TransactionLog,
 } from './api';
@@ -23,12 +25,17 @@ import {
   encodeCancelProposalCall,
   encodeCreateDaoCall,
   encodeCreateSpendingProposalCall,
+  encodeExecuteProposalCall,
   encodeFinalizeProposalCall,
+  encodeRegisterEvidenceHashCall,
   encodeVoteCall,
+  executeProposalSelector,
   finalizeProposalSelector,
+  registerEvidenceHashSelector,
   toQuantityHex,
   validateCreateDaoInput,
   validateDepositEth,
+  validateEvidenceRegistration,
   validateSpendingProposalInput,
   voteSelector,
 } from './transactions';
@@ -70,6 +77,7 @@ const daoDetail: DaoDetail = {
       proposalId: '1',
       title: 'MT 숙소 예약비',
       description: '숙소 예약금을 지출합니다.',
+      proposalType: ProposalType.Spending,
       amountWei: '500000000000000000',
       recipient: '0xc000000000000000000000000000000000000002',
       proposer: memberAddress,
@@ -82,6 +90,7 @@ const daoDetail: DaoDetail = {
       proposalId: '2',
       title: '서버비',
       description: '클라우드 서버비를 지출합니다.',
+      proposalType: ProposalType.Spending,
       amountWei: '100000000000000000',
       recipient: '0xc000000000000000000000000000000000000002',
       proposer: '0xc000000000000000000000000000000000000002',
@@ -108,6 +117,61 @@ const voteHistory: TransactionLog[] = [
   },
 ];
 
+const phase13History: TransactionLog[] = [
+  {
+    txHash: '0xdeposit',
+    logIndex: 0,
+    daoAddress: daos[0].daoAddress,
+    proposalId: null,
+    eventType: 'DepositReceived',
+    actor: memberAddress,
+    amountWei: '1000000000000000000',
+    status: 'deposit',
+    blockNumber: '1',
+    createdAt: '2026-06-02T00:00:00.000Z',
+  },
+  {
+    txHash: '0xfailed',
+    logIndex: 1,
+    daoAddress: daos[0].daoAddress,
+    proposalId: '3',
+    eventType: 'ProposalExecutionFailed',
+    actor: memberAddress,
+    amountWei: '300000000000000000',
+    status: 'execution_failed:1',
+    blockNumber: '2',
+    createdAt: '2026-06-02T00:01:00.000Z',
+  },
+  {
+    txHash: '0xevidence',
+    logIndex: 2,
+    daoAddress: daos[0].daoAddress,
+    proposalId: '4',
+    eventType: 'EvidenceHashRegistered',
+    actor: memberAddress,
+    amountWei: null,
+    status: 'evidence',
+    blockNumber: '3',
+    createdAt: '2026-06-02T00:02:00.000Z',
+  },
+];
+
+const evidenceFiles: EvidenceFileRecord[] = [
+  {
+    evidenceId: 'e1',
+    daoAddress: daos[0].daoAddress,
+    proposalId: '4',
+    uploader: memberAddress,
+    evidenceType: 'receipt',
+    r2ObjectKey: 'dao/x/proposal/4/evidence/e1/receipt.png',
+    mimeType: 'image/png',
+    fileSize: 2048,
+    description: '영수증 원본',
+    contentHash: `0x${'e'.repeat(64)}`,
+    createdAt: '2026-06-02T00:03:00.000Z',
+  },
+];
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -115,18 +179,23 @@ afterEach(() => {
 function renderConnectedLayout(overrides: Record<string, unknown> = {}) {
   const props = {
     address: memberAddress,
+    budgetFilter: 'all',
     budgetHistory: [],
     chainId: SEPOLIA_CHAIN_ID,
     daoDetail: null,
     daoError: null,
     daoFilter: 'active',
     daos,
+    evidenceFiles: [],
     isLoadingDaos: false,
     isLoadingDetail: false,
     onCancelProposal: async () => undefined,
     onCreateDao: async () => undefined,
     onCreateProposal: async () => undefined,
     onDeposit: async () => undefined,
+    onBudgetFilterChange: () => undefined,
+    onEvidenceSubmit: async () => undefined,
+    onExecuteProposal: async () => undefined,
     onFilterChange: () => undefined,
     onFinalizeProposal: async () => undefined,
     onProposalFilterChange: () => undefined,
@@ -418,6 +487,191 @@ describe('phase 10 and 11 web UI', () => {
     });
     expect(fetchMock).toHaveBeenCalledWith(
       'https://api.example.test/proposal-details/hash',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
+  it('renders execute action only for executable proposals and shows execution failure reason codes', () => {
+    const html = renderConnectedLayout({
+      daoDetail: {
+        ...daoDetail,
+        proposals: [
+          ...daoDetail.proposals,
+          {
+            ...daoDetail.proposals[1],
+            proposalId: '3',
+            title: '잔액 초과 지출',
+            proposer: memberAddress,
+            status: ProposalStatus.ExecutionFailed,
+          },
+        ],
+      },
+      budgetHistory: phase13History,
+      selectedDao: daos[0],
+      selectedProposalId: '2',
+      view: 'proposal-detail',
+    });
+
+    expect(html).toContain('지출 집행');
+    expect(html).not.toContain('reasonCode 1');
+
+    const failedHtml = renderConnectedLayout({
+      daoDetail: {
+        ...daoDetail,
+        proposals: [
+          {
+            ...daoDetail.proposals[1],
+            proposalId: '3',
+            title: '잔액 초과 지출',
+            proposer: memberAddress,
+            status: ProposalStatus.ExecutionFailed,
+          },
+        ],
+      },
+      budgetHistory: phase13History,
+      selectedDao: daos[0],
+      selectedProposalId: '3',
+      view: 'proposal-detail',
+    });
+
+    expect(failedHtml).toContain('지출 집행이 실패했습니다.');
+    expect(failedHtml).toContain('reasonCode 1');
+    expect(failedHtml).toContain('잔액 부족');
+    expect(failedHtml).not.toContain('>지출 집행</button>');
+  });
+
+  it('allows evidence registration only for executed own spending proposals and renders evidence lookup', () => {
+    expect(
+      validateEvidenceRegistration({
+        currentAddress: memberAddress,
+        proposalType: ProposalType.Spending,
+        proposalStatus: ProposalStatus.Executed,
+        proposer: memberAddress,
+      }),
+    ).toMatchObject({ ok: true });
+    expect(
+      validateEvidenceRegistration({
+        currentAddress: memberAddress,
+        proposalType: ProposalType.Spending,
+        proposalStatus: ProposalStatus.ExecutionFailed,
+        proposer: memberAddress,
+      }),
+    ).toMatchObject({ ok: false });
+
+    const html = renderConnectedLayout({
+      daoDetail: {
+        ...daoDetail,
+        proposals: [
+          {
+            ...daoDetail.proposals[1],
+            proposalId: '4',
+            proposer: memberAddress,
+            status: ProposalStatus.Executed,
+          },
+        ],
+      },
+      evidenceFiles,
+      selectedDao: daos[0],
+      selectedProposalId: '4',
+      view: 'proposal-detail',
+    });
+
+    expect(html).toContain('증빙 조회');
+    expect(html).toContain('영수증 원본');
+    expect(html).toContain('증빙 해시 등록');
+    expect(html).not.toContain('집행 완료된 제안에만 증빙을 등록할 수 있습니다.');
+  });
+
+  it('renders budget history filters for deposits, execution failures, and evidence events', () => {
+    const html = renderConnectedLayout({
+      budgetFilter: 'execution',
+      budgetHistory: phase13History,
+      daoDetail,
+      selectedDao: daos[0],
+      view: 'budget',
+    });
+
+    expect(html).toContain('예산 내역');
+    expect(html).toContain('지출 집행 실패');
+    expect(html).toContain('reasonCode 1');
+    expect(html).not.toContain('회비 입금');
+
+    const evidenceHtml = renderConnectedLayout({
+      budgetFilter: 'evidence',
+      budgetHistory: phase13History,
+      daoDetail,
+      selectedDao: daos[0],
+      view: 'budget',
+    });
+
+    expect(evidenceHtml).toContain('증빙 등록');
+    expect(evidenceHtml).not.toContain('회비 입금');
+  });
+
+  it('encodes execute and evidence hash registration transaction payloads', () => {
+    expect(encodeExecuteProposalCall('2')).toBe(
+      `${executeProposalSelector}${'2'.padStart(64, '0')}`,
+    );
+    expect(
+      encodeRegisterEvidenceHashCall('4', `0x${'e'.repeat(64)}`).startsWith(
+        registerEvidenceHashSelector,
+      ),
+    ).toBe(true);
+  });
+
+  it('calls evidence hash, proposal detail evidence, and evidence metadata APIs', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input);
+      if (url.endsWith('/evidence/hash')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ ok: true, contentHash: `0x${'e'.repeat(64)}` }), {
+            headers: { 'content-type': 'application/json' },
+            status: 200,
+          }),
+        );
+      }
+      if (url.includes('/daos/') && url.includes('/proposals/4')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ ok: true, proposal: daoDetail.proposals[1], evidence: evidenceFiles }),
+            {
+              headers: { 'content-type': 'application/json' },
+              status: 200,
+            },
+          ),
+        );
+      }
+
+      return Promise.resolve(
+        new Response(JSON.stringify({ ok: true, record: evidenceFiles[0] }), {
+          headers: { 'content-type': 'application/json' },
+          status: 200,
+        }),
+      );
+    });
+
+    const client = createApiClient('https://api.example.test');
+    await expect(client.hashEvidence('ZmFrZQ==')).resolves.toBe(`0x${'e'.repeat(64)}`);
+    await expect(client.getProposalDetail(daos[0].daoAddress, '4', memberAddress)).resolves.toEqual(
+      { proposal: daoDetail.proposals[1], evidence: evidenceFiles },
+    );
+    await expect(
+      client.saveEvidenceFile({
+        daoAddress: daos[0].daoAddress,
+        proposalId: '4',
+        uploader: memberAddress,
+        evidenceType: 'receipt',
+        fileName: 'receipt.png',
+        mimeType: 'image/png',
+        fileSize: 2048,
+        description: '영수증 원본',
+        contentHash: `0x${'e'.repeat(64)}`,
+        fileBase64: 'ZmFrZQ==',
+      }),
+    ).resolves.toEqual(evidenceFiles[0]);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.example.test/evidence/hash',
       expect.objectContaining({ method: 'POST' }),
     );
   });

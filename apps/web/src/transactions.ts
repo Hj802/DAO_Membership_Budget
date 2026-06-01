@@ -1,4 +1,10 @@
-import { ApprovalRule, ApprovalType, MAX_DAO_MEMBER_COUNT, ProposalType } from '@dao-budget/shared';
+import {
+  ApprovalRule,
+  ApprovalType,
+  MAX_DAO_MEMBER_COUNT,
+  ProposalStatus,
+  ProposalType,
+} from '@dao-budget/shared';
 
 export const createDaoSelector = '0xa5daeb23';
 export const depositSelector = '0xd0e30db0';
@@ -6,6 +12,8 @@ export const createProposalSelector = '0x1fa4cb95';
 export const voteSelector = '0xc9d27afe';
 export const finalizeProposalSelector = '0x5652077c';
 export const cancelProposalSelector = '0x8b0bbf39';
+export const executeProposalSelector = '0x0d61b519';
+export const registerEvidenceHashSelector = '0x27892b39';
 
 const addressPattern = /^0x[a-fA-F0-9]{40}$/;
 
@@ -220,6 +228,49 @@ export function encodeCancelProposalCall(proposalId: string, cancelReasonHash: s
   return `${cancelProposalSelector}${encodeUint(BigInt(proposalId))}${encodeBytes32(
     cancelReasonHash,
   )}`;
+}
+
+export function encodeExecuteProposalCall(proposalId: string) {
+  return `${executeProposalSelector}${encodeUint(BigInt(proposalId))}`;
+}
+
+export function encodeRegisterEvidenceHashCall(proposalId: string, evidenceHash: string) {
+  return `${registerEvidenceHashSelector}${encodeUint(BigInt(proposalId))}${encodeBytes32(
+    evidenceHash,
+  )}`;
+}
+
+export function validateEvidenceRegistration(input: {
+  currentAddress: string;
+  proposalType?: ProposalType;
+  proposalStatus?: number;
+  proposer?: string;
+}) {
+  if (input.proposalType !== ProposalType.Spending) {
+    return { ok: false as const, error: '지출 제안에만 증빙을 등록할 수 있습니다.' };
+  }
+  if (input.proposalStatus !== ProposalStatus.Executed) {
+    return { ok: false as const, error: '집행 완료된 제안에만 증빙을 등록할 수 있습니다.' };
+  }
+  if (
+    !input.proposer ||
+    normalizeAddress(input.proposer) !== normalizeAddress(input.currentAddress)
+  ) {
+    return { ok: false as const, error: '제안자만 증빙을 등록할 수 있습니다.' };
+  }
+
+  return { ok: true as const };
+}
+
+export async function fileToBase64(file: File) {
+  const buffer = await file.arrayBuffer();
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return btoa(binary);
 }
 
 function encodeString(value: string) {

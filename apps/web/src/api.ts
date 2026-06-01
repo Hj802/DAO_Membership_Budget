@@ -52,15 +52,49 @@ export type TransactionLog = {
   createdAt: string;
 };
 
+export type EvidenceFileRecord = {
+  evidenceId: string;
+  daoAddress: string;
+  proposalId: string;
+  uploader: string;
+  evidenceType: string;
+  r2ObjectKey: string;
+  mimeType: string;
+  fileSize: number;
+  description: string | null;
+  contentHash: string;
+  createdAt: string;
+};
+
 export type ApiClient = {
   listMyDaos(memberAddress: string): Promise<DaoSummary[]>;
   getDaoDetail(daoAddress: string, memberAddress: string): Promise<DaoDetail>;
+  getProposalDetail(
+    daoAddress: string,
+    proposalId: string,
+    memberAddress: string,
+  ): Promise<{ proposal: ProposalDetail; evidence: EvidenceFileRecord[] }>;
   listBudgetHistory(daoAddress: string, memberAddress: string): Promise<TransactionLog[]>;
   hashProposal(input: ProposalHashInput): Promise<ProposalHashResult>;
   saveProposalDetail(
     input: ProposalHashInput & { proposalId: string; contentHash: string },
   ): Promise<void>;
   hashCancelReason(cancelReason: string): Promise<string>;
+  hashEvidence(fileBase64: string): Promise<string>;
+  saveEvidenceFile(input: EvidenceFileInput): Promise<EvidenceFileRecord>;
+};
+
+export type EvidenceFileInput = {
+  daoAddress: string;
+  proposalId: string;
+  uploader: string;
+  evidenceType: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  description?: string | null;
+  contentHash: string;
+  fileBase64?: string;
 };
 
 export type ProposalHashInput = {
@@ -122,6 +156,26 @@ export function createApiClient(
       }
 
       return body.dao;
+    },
+
+    async getProposalDetail(daoAddress: string, proposalId: string, memberAddress: string) {
+      const response = await fetch(
+        `${normalizedBaseUrl}/daos/${encodeURIComponent(daoAddress)}/proposals/${encodeURIComponent(
+          proposalId,
+        )}?member=${encodeURIComponent(memberAddress)}`,
+      );
+      const body = (await response.json()) as {
+        ok?: boolean;
+        proposal?: ProposalDetail;
+        evidence?: EvidenceFileRecord[];
+        error?: string;
+      };
+
+      if (!response.ok || body.ok === false || !body.proposal || !Array.isArray(body.evidence)) {
+        throw new Error(body.error ?? '제안 상세 증빙 정보를 불러오지 못했습니다.');
+      }
+
+      return { proposal: body.proposal, evidence: body.evidence };
     },
 
     async listBudgetHistory(daoAddress: string, memberAddress: string) {
@@ -197,6 +251,44 @@ export function createApiClient(
       }
 
       return body.cancelReasonHash;
+    },
+
+    async hashEvidence(fileBase64: string) {
+      const response = await fetch(`${normalizedBaseUrl}/evidence/hash`, {
+        body: JSON.stringify({ fileBase64 }),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const body = (await response.json()) as {
+        contentHash?: string;
+        error?: string;
+        ok?: boolean;
+      };
+
+      if (!response.ok || body.ok === false || !body.contentHash) {
+        throw new Error(body.error ?? '증빙 파일 해시를 생성하지 못했습니다.');
+      }
+
+      return body.contentHash;
+    },
+
+    async saveEvidenceFile(input) {
+      const response = await fetch(`${normalizedBaseUrl}/evidence-files`, {
+        body: JSON.stringify(input),
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+      });
+      const body = (await response.json()) as {
+        error?: string;
+        ok?: boolean;
+        record?: EvidenceFileRecord;
+      };
+
+      if (!response.ok || body.ok === false || !body.record) {
+        throw new Error(body.error ?? '증빙 메타데이터를 저장하지 못했습니다.');
+      }
+
+      return body.record;
     },
   };
 }

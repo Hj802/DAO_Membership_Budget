@@ -286,6 +286,11 @@ button:disabled {
   box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
 }
 
+.segmented-control.wrap {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .dao-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -343,6 +348,7 @@ button:disabled {
 }
 
 .form-panel input,
+.form-panel select,
 .form-panel textarea,
 .amount-input input {
   width: 100%;
@@ -352,6 +358,10 @@ button:disabled {
   color: #191c1e;
   padding: 12px 14px;
   font: inherit;
+}
+
+.form-panel select {
+  appearance: none;
 }
 
 .form-panel textarea {
@@ -516,6 +526,17 @@ button:disabled {
   color: #545f73;
 }
 
+.budget-row {
+  align-items: flex-start;
+}
+
+.budget-row a {
+  color: #004ac6;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .proposal-row {
   width: 100%;
   border-right: 0;
@@ -580,10 +601,40 @@ button:disabled {
   color: #545f73;
 }
 
+.summary-list.compact {
+  margin: 12px 0 0;
+  gap: 8px;
+}
+
+.summary-list.compact div {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+}
+
 .action-stack {
   display: grid;
   gap: 10px;
   margin-top: 18px;
+}
+
+.evidence-list {
+  display: grid;
+  gap: 12px;
+}
+
+.evidence-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.evidence-item > div {
+  display: grid;
+  gap: 4px;
+}
+
+.evidence-item span {
+  color: #545f73;
 }
 
 .dao-card,

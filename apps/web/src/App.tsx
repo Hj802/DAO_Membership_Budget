@@ -13,6 +13,7 @@ import {
   filterDaosByStatus,
   type ApiClient,
   type DaoDetail,
+  type EvidenceFileRecord,
   type ProposalDetail,
   type DaoSummary,
   type TransactionLog,
@@ -29,19 +30,24 @@ import {
   encodeCancelProposalCall,
   encodeCreateDaoCall,
   encodeCreateSpendingProposalCall,
+  encodeExecuteProposalCall,
   encodeFinalizeProposalCall,
+  encodeRegisterEvidenceHashCall,
   encodeVoteCall,
+  fileToBase64,
   isAddress,
   normalizeAddress,
   toQuantityHex,
   validateCreateDaoInput,
   validateDepositEth,
+  validateEvidenceRegistration,
   validateSpendingProposalInput,
 } from './transactions';
 import './styles.css';
 
 type DaoFilter = 'active' | 'terminated';
 type ProposalFilter = 'all' | 'voting' | 'executable' | 'closed';
+type BudgetFilter = 'all' | 'deposit' | 'proposal' | 'cancel' | 'vote' | 'execution' | 'evidence';
 type View =
   | 'list'
   | 'create'
@@ -49,7 +55,8 @@ type View =
   | 'deposit'
   | 'proposal-create'
   | 'proposals'
-  | 'proposal-detail';
+  | 'proposal-detail'
+  | 'budget';
 type TxState = {
   status: 'idle' | 'pending' | 'success' | 'error';
   message: string;
@@ -88,8 +95,10 @@ export function App({ apiClient, walletClient }: AppProps) {
   const [selectedDaoAddress, setSelectedDaoAddress] = useState<string | null>(null);
   const [daoDetail, setDaoDetail] = useState<DaoDetail | null>(null);
   const [budgetHistory, setBudgetHistory] = useState<TransactionLog[]>([]);
+  const [selectedEvidenceFiles, setSelectedEvidenceFiles] = useState<EvidenceFileRecord[]>([]);
   const [daoFilter, setDaoFilter] = useState<DaoFilter>('active');
   const [proposalFilter, setProposalFilter] = useState<ProposalFilter>('all');
+  const [budgetFilter, setBudgetFilter] = useState<BudgetFilter>('all');
   const [selectedProposalId, setSelectedProposalId] = useState<string | null>(null);
   const [isLoadingDaos, setIsLoadingDaos] = useState(false);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
@@ -152,6 +161,7 @@ export function App({ apiClient, walletClient }: AppProps) {
     if (!walletState.address || !selectedDaoAddress || view === 'list' || view === 'create') {
       setDaoDetail(null);
       setBudgetHistory([]);
+      setSelectedEvidenceFiles([]);
       return;
     }
 
@@ -181,6 +191,35 @@ export function App({ apiClient, walletClient }: AppProps) {
       isMounted = false;
     };
   }, [api, detailRefreshNonce, selectedDaoAddress, view, walletState.address]);
+
+  useEffect(() => {
+    if (
+      !walletState.address ||
+      !selectedDaoAddress ||
+      !selectedProposalId ||
+      view !== 'proposal-detail'
+    ) {
+      setSelectedEvidenceFiles([]);
+      return;
+    }
+
+    let isMounted = true;
+    api
+      .getProposalDetail(selectedDaoAddress, selectedProposalId, walletState.address)
+      .then(({ evidence }) => {
+        if (!isMounted) return;
+        setSelectedEvidenceFiles(evidence);
+      })
+      .catch((error: Error) => {
+        if (!isMounted) return;
+        setSelectedEvidenceFiles([]);
+        setDaoError(error.message);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [api, detailRefreshNonce, selectedDaoAddress, selectedProposalId, view, walletState.address]);
 
   async function refreshDaos(address = walletState.address) {
     if (!address) return;
@@ -480,6 +519,83 @@ export function App({ apiClient, walletClient }: AppProps) {
     }
   }
 
+  async function submitExecuteProposal(proposalId: string) {
+    if (!walletState.address || !selectedDao) return;
+
+    setTxState({ status: 'pending', message: '지출 집행 트랜잭션 승인을 기다리는 중입니다.' });
+    try {
+      const txHash = await wallet.sendTransaction({
+        from: walletState.address,
+        to: selectedDao.daoAddress,
+        data: encodeExecuteProposalCall(proposalId),
+      });
+      setTxState({
+        status: 'success',
+        message:
+          '지출 집행 트랜잭션이 전송되었습니다. 이벤트 동기화 후 잔액과 예산 내역에 반영됩니다.',
+        txHash,
+      });
+      setDetailRefreshNonce((value) => value + 1);
+    } catch (error) {
+      setTxState({
+        status: 'error',
+        message: error instanceof Error ? error.message : '지출 집행 트랜잭션이 실패했습니다.',
+      });
+    }
+  }
+
+  async function submitEvidence(input: EvidenceRegistrationInput) {
+    if (!walletState.address || !selectedDao) return;
+
+    const validation = validateEvidenceRegistration({
+      currentAddress: walletState.address,
+      proposalType: input.proposal.proposalType,
+      proposalStatus: input.proposal.status,
+      proposer: input.proposal.proposer,
+    });
+    if (!validation.ok) {
+      setTxState({ status: 'error', message: validation.error });
+      return;
+    }
+
+    setTxState({
+      status: 'pending',
+      message: '증빙 파일 해시 생성 및 등록 트랜잭션 승인을 기다리는 중입니다.',
+    });
+    try {
+      const fileBase64 = await fileToBase64(input.file);
+      const contentHash = await api.hashEvidence(fileBase64);
+      const txHash = await wallet.sendTransaction({
+        from: walletState.address,
+        to: selectedDao.daoAddress,
+        data: encodeRegisterEvidenceHashCall(input.proposal.proposalId, contentHash),
+      });
+      await api.saveEvidenceFile({
+        daoAddress: selectedDao.daoAddress,
+        proposalId: input.proposal.proposalId,
+        uploader: walletState.address,
+        evidenceType: input.evidenceType,
+        fileName: input.file.name,
+        mimeType: input.file.type || 'application/octet-stream',
+        fileSize: input.file.size,
+        description: input.description || null,
+        contentHash,
+        fileBase64,
+      });
+      setTxState({
+        status: 'success',
+        message: '증빙 해시 등록 트랜잭션이 전송되었고 증빙 메타데이터가 저장되었습니다.',
+        txHash,
+      });
+      setDetailRefreshNonce((value) => value + 1);
+    } catch (error) {
+      setTxState({
+        status: 'error',
+        message: error instanceof Error ? error.message : '증빙 등록이 실패했습니다.',
+      });
+    }
+  }
+
   if (!walletState.address) {
     return (
       <DisconnectedView
@@ -493,12 +609,14 @@ export function App({ apiClient, walletClient }: AppProps) {
   return (
     <ConnectedLayout
       address={walletState.address}
+      budgetFilter={budgetFilter}
       budgetHistory={budgetHistory}
       chainId={walletState.chainId}
       daoDetail={daoDetail}
       daoError={daoError}
       daoFilter={daoFilter}
       daos={daos}
+      evidenceFiles={selectedEvidenceFiles}
       isLoadingDaos={isLoadingDaos}
       isLoadingDetail={isLoadingDetail}
       onCreateDao={submitCreateDao}
@@ -508,7 +626,10 @@ export function App({ apiClient, walletClient }: AppProps) {
       onRefresh={() => refreshDaos()}
       onCancelProposal={submitCancelProposal}
       onCreateProposal={submitSpendingProposal}
+      onEvidenceSubmit={submitEvidence}
+      onExecuteProposal={submitExecuteProposal}
       onFinalizeProposal={submitFinalize}
+      onBudgetFilterChange={setBudgetFilter}
       onVote={submitVote}
       onSelectDao={(daoAddress) => {
         setSelectedDaoAddress(daoAddress);
@@ -589,18 +710,23 @@ export function DisconnectedView({
 
 type ConnectedLayoutProps = {
   address: string;
+  budgetFilter: BudgetFilter;
   budgetHistory: TransactionLog[];
   chainId: number | null;
   daoDetail: DaoDetail | null;
   daoError: string | null;
   daoFilter: DaoFilter;
   daos: DaoSummary[];
+  evidenceFiles: EvidenceFileRecord[];
   isLoadingDaos: boolean;
   isLoadingDetail: boolean;
+  onBudgetFilterChange: (filter: BudgetFilter) => void;
+  onCancelProposal: (proposalId: string, cancelReason: string) => Promise<void>;
   onCreateDao: (input: CreateDaoFormData) => Promise<void>;
   onCreateProposal: (input: SpendingProposalFormData) => Promise<void>;
-  onCancelProposal: (proposalId: string, cancelReason: string) => Promise<void>;
   onDeposit: (amountEth: string) => Promise<void>;
+  onEvidenceSubmit: (input: EvidenceRegistrationInput) => Promise<void>;
+  onExecuteProposal: (proposalId: string) => Promise<void>;
   onFilterChange: (filter: DaoFilter) => void;
   onFinalizeProposal: (proposalId: string) => Promise<void>;
   onProposalFilterChange: (filter: ProposalFilter) => void;
@@ -668,6 +794,7 @@ export function ConnectedLayout(props: ConnectedLayoutProps) {
             isLoading={props.isLoadingDetail}
             onDeposit={() => props.onViewChange('deposit')}
             onCreateProposal={() => props.onViewChange('proposal-create')}
+            onOpenBudget={() => props.onViewChange('budget')}
             onOpenProposals={() => props.onViewChange('proposals')}
           />
         ) : null}
@@ -702,12 +829,23 @@ export function ConnectedLayout(props: ConnectedLayoutProps) {
             budgetHistory={props.budgetHistory}
             currentAddress={props.address}
             dao={props.daoDetail ?? props.selectedDao}
+            evidenceFiles={props.evidenceFiles}
             isPending={props.txState.status === 'pending'}
             onBack={() => props.onViewChange('proposals')}
             onCancel={props.onCancelProposal}
+            onEvidenceSubmit={props.onEvidenceSubmit}
+            onExecute={props.onExecuteProposal}
             onFinalize={props.onFinalizeProposal}
             onVote={props.onVote}
             proposalId={props.selectedProposalId}
+          />
+        ) : null}
+        {props.view === 'budget' ? (
+          <BudgetHistoryView
+            dao={props.daoDetail ?? props.selectedDao}
+            filter={props.budgetFilter}
+            history={props.budgetHistory}
+            onFilterChange={props.onBudgetFilterChange}
           />
         ) : null}
       </main>
@@ -759,7 +897,13 @@ function Topbar({
         >
           제안
         </button>
-        <button disabled>예산 내역</button>
+        <button
+          aria-current={view === 'budget' ? 'page' : undefined}
+          disabled={!selectedDao}
+          onClick={() => onViewChange('budget')}
+        >
+          예산 내역
+        </button>
       </nav>
       <div className="topbar-actions">
         <button
@@ -1018,6 +1162,7 @@ function DashboardView({
   isLoading,
   onCreateProposal,
   onDeposit,
+  onOpenBudget,
   onOpenProposals,
 }: {
   budgetHistory: TransactionLog[];
@@ -1025,6 +1170,7 @@ function DashboardView({
   isLoading: boolean;
   onCreateProposal: () => void;
   onDeposit: () => void;
+  onOpenBudget: () => void;
   onOpenProposals: () => void;
 }) {
   if (!dao) {
@@ -1057,8 +1203,8 @@ function DashboardView({
           <button className="primary-button" disabled={disabled} onClick={onCreateProposal}>
             지출 제안
           </button>
-          <button className="secondary-button" onClick={onOpenProposals}>
-            제안 목록
+          <button className="secondary-button" onClick={onOpenBudget}>
+            예산 내역
           </button>
         </div>
       </div>
@@ -1246,6 +1392,13 @@ type SpendingProposalFormData = {
   recipient: string;
   deadline: number;
   approvalType: ApprovalType;
+};
+
+type EvidenceRegistrationInput = {
+  proposal: ProposalDetail;
+  evidenceType: string;
+  description: string;
+  file: File;
 };
 
 function SpendingProposalCreateView({
@@ -1459,9 +1612,12 @@ function ProposalDetailView({
   budgetHistory,
   currentAddress,
   dao,
+  evidenceFiles,
   isPending,
   onBack,
   onCancel,
+  onEvidenceSubmit,
+  onExecute,
   onFinalize,
   onVote,
   proposalId,
@@ -1469,14 +1625,21 @@ function ProposalDetailView({
   budgetHistory: TransactionLog[];
   currentAddress: string;
   dao: DaoSummary | DaoDetail | null;
+  evidenceFiles: EvidenceFileRecord[];
   isPending: boolean;
   onBack: () => void;
   onCancel: (proposalId: string, reason: string) => Promise<void>;
+  onEvidenceSubmit: (input: EvidenceRegistrationInput) => Promise<void>;
+  onExecute: (proposalId: string) => Promise<void>;
   onFinalize: (proposalId: string) => Promise<void>;
   onVote: (proposalId: string, support: boolean) => Promise<void>;
   proposalId: string | null;
 }) {
   const [cancelReason, setCancelReason] = useState('');
+  const [evidenceType, setEvidenceType] = useState('receipt');
+  const [evidenceDescription, setEvidenceDescription] = useState('');
+  const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
   const proposal =
     dao && 'proposals' in dao
       ? (dao.proposals.find((item) => item.proposalId === proposalId) ?? null)
@@ -1493,17 +1656,43 @@ function ProposalDetailView({
     );
   }
 
-  const votes = summarizeVotes(budgetHistory, proposal.proposalId, dao.memberCount);
+  const selectedProposal = proposal;
+  const votes = summarizeVotes(budgetHistory, selectedProposal.proposalId, dao.memberCount);
   const now = Math.floor(Date.now() / 1000);
-  const isVoting = (proposal.status ?? ProposalStatus.Voting) === ProposalStatus.Voting;
+  const isVoting = (selectedProposal.status ?? ProposalStatus.Voting) === ProposalStatus.Voting;
   const isBeforeDeadline = now < proposal.deadline;
   const hasVoted = votes.voters.has(normalizeAddress(currentAddress));
   const canVote = isVoting && isBeforeDeadline && !hasVoted && dao.status === DaoStatus.Active;
   const canFinalize = isVoting && !isBeforeDeadline;
+  const canExecute =
+    selectedProposal.status === ProposalStatus.Executable && dao.status === DaoStatus.Active;
   const canCancel =
     isVoting &&
     isBeforeDeadline &&
-    proposal.proposer?.toLowerCase() === currentAddress.toLowerCase();
+    selectedProposal.proposer?.toLowerCase() === currentAddress.toLowerCase();
+  const evidencePermission = validateEvidenceRegistration({
+    currentAddress,
+    proposalType: selectedProposal.proposalType,
+    proposalStatus: selectedProposal.status,
+    proposer: selectedProposal.proposer,
+  });
+  const executionFailure = getExecutionFailureReason(budgetHistory, selectedProposal.proposalId);
+
+  function submitEvidence(event: FormEvent) {
+    event.preventDefault();
+    if (!evidenceFile) {
+      setEvidenceError('증빙 파일을 선택하세요.');
+      return;
+    }
+
+    setEvidenceError(null);
+    void onEvidenceSubmit({
+      description: evidenceDescription,
+      evidenceType,
+      file: evidenceFile,
+      proposal: selectedProposal,
+    });
+  }
 
   return (
     <section className="dashboard">
@@ -1526,6 +1715,14 @@ function ProposalDetailView({
         </div>
       ) : null}
       {hasVoted ? <div className="alert warning">이미 이 제안에 투표했습니다.</div> : null}
+      {proposal.status === ProposalStatus.Executed ? (
+        <div className="alert warning">지출 집행이 완료되었습니다. 증빙을 조회할 수 있습니다.</div>
+      ) : null}
+      {proposal.status === ProposalStatus.ExecutionFailed ? (
+        <div className="alert danger">
+          지출 집행이 실패했습니다. reasonCode {executionFailure.code} · {executionFailure.label}
+        </div>
+      ) : null}
       <section className="form-grid">
         <div className="form-panel wide">
           <h2>제안 상세</h2>
@@ -1589,8 +1786,98 @@ function ProposalDetailView({
             >
               결과 확정
             </button>
+            {canExecute ? (
+              <button
+                className="primary-button"
+                disabled={isPending}
+                onClick={() => onExecute(proposal.proposalId)}
+              >
+                지출 집행
+              </button>
+            ) : null}
           </div>
         </div>
+      </section>
+      <section className="form-grid">
+        <div className="form-panel wide">
+          <div className="panel-title">
+            <div>
+              <h2>증빙 조회</h2>
+              <p>등록된 증빙 원본은 수정, 삭제, 교체할 수 없습니다.</p>
+            </div>
+          </div>
+          {evidenceFiles.length > 0 ? (
+            <div className="evidence-list">
+              {evidenceFiles.map((evidence) => (
+                <article className="evidence-item" key={evidence.evidenceId}>
+                  <div>
+                    <strong>{evidence.evidenceType}</strong>
+                    <span>{evidence.description || '설명 없음'}</span>
+                  </div>
+                  <dl className="summary-list compact">
+                    <div>
+                      <dt>SHA-256</dt>
+                      <dd>{formatHash(evidence.contentHash)}</dd>
+                    </div>
+                    <div>
+                      <dt>업로더</dt>
+                      <dd>{formatAddress(evidence.uploader)}</dd>
+                    </div>
+                    <div>
+                      <dt>파일</dt>
+                      <dd>
+                        {evidence.mimeType} · {formatFileSize(evidence.fileSize)}
+                      </dd>
+                    </div>
+                  </dl>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="muted">등록된 증빙이 없습니다.</p>
+          )}
+        </div>
+        <form className="form-panel" onSubmit={submitEvidence}>
+          <h2>증빙 등록</h2>
+          {evidencePermission.ok ? null : (
+            <div className="alert warning">{evidencePermission.error}</div>
+          )}
+          {evidenceError ? <div className="alert danger">{evidenceError}</div> : null}
+          <label htmlFor="evidence-type">증빙 유형</label>
+          <select
+            disabled={!evidencePermission.ok || isPending}
+            id="evidence-type"
+            onChange={(event) => setEvidenceType(event.target.value)}
+            value={evidenceType}
+          >
+            <option value="receipt">영수증</option>
+            <option value="invoice">청구서</option>
+            <option value="transfer">송금 확인</option>
+            <option value="other">기타</option>
+          </select>
+          <label htmlFor="evidence-description">설명</label>
+          <textarea
+            disabled={!evidencePermission.ok || isPending}
+            id="evidence-description"
+            onChange={(event) => setEvidenceDescription(event.target.value)}
+            rows={3}
+            value={evidenceDescription}
+          />
+          <label htmlFor="evidence-file">파일</label>
+          <input
+            disabled={!evidencePermission.ok || isPending}
+            id="evidence-file"
+            onChange={(event) => setEvidenceFile(event.target.files?.[0] ?? null)}
+            type="file"
+          />
+          <button
+            className="primary-button full"
+            disabled={!evidencePermission.ok || isPending}
+            type="submit"
+          >
+            증빙 해시 등록
+          </button>
+        </form>
       </section>
       {canCancel ? (
         <section className="form-panel">
@@ -1612,6 +1899,103 @@ function ProposalDetailView({
           </div>
         </section>
       ) : null}
+    </section>
+  );
+}
+
+function BudgetHistoryView({
+  dao,
+  filter,
+  history,
+  onFilterChange,
+}: {
+  dao: DaoSummary | DaoDetail | null;
+  filter: BudgetFilter;
+  history: TransactionLog[];
+  onFilterChange: (filter: BudgetFilter) => void;
+}) {
+  if (!dao) {
+    return (
+      <div className="empty-state">
+        <h1>예산 내역을 볼 DAO를 선택하세요.</h1>
+      </div>
+    );
+  }
+
+  const filteredHistory = filterBudgetHistory(history, filter);
+  const metrics = summarizeBudget(history);
+  const filters: Array<{ label: string; value: BudgetFilter }> = [
+    { label: '전체', value: 'all' },
+    { label: '입금', value: 'deposit' },
+    { label: '제안', value: 'proposal' },
+    { label: '취소', value: 'cancel' },
+    { label: '투표', value: 'vote' },
+    { label: '집행', value: 'execution' },
+    { label: '증빙', value: 'evidence' },
+  ];
+
+  return (
+    <section className="dashboard">
+      <div className="content-header">
+        <div>
+          <h1>예산 내역</h1>
+          <p>
+            {dao.name} · 현재 잔액 {dao.balanceEth ?? '-'} ETH
+          </p>
+        </div>
+        <div className="segmented-control wrap" role="tablist" aria-label="예산 이벤트 필터">
+          {filters.map((item) => (
+            <button
+              aria-selected={filter === item.value}
+              key={item.value}
+              onClick={() => onFilterChange(item.value)}
+              role="tab"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="metric-grid">
+        <MetricCard label="현재 금고 잔액" value={`${dao.balanceEth ?? '-'} ETH`} />
+        <MetricCard label="총 입금" value={`${metrics.totalDepositsEth} ETH`} />
+        <MetricCard label="총 집행" value={`${metrics.totalExecutedEth} ETH`} />
+        <MetricCard label="증빙 이벤트" value={`${history.filter(isEvidenceEvent).length}건`} />
+      </div>
+      <section className="panel-table budget-table">
+        {filteredHistory.length > 0 ? (
+          filteredHistory.map((log) => {
+            const failure =
+              log.eventType === 'ProposalExecutionFailed' ? parseReasonCode(log.status) : null;
+            return (
+              <div className="list-row budget-row" key={`${log.txHash}:${log.logIndex}`}>
+                <div>
+                  <strong>{budgetEventLabel(log.eventType)}</strong>
+                  <span>
+                    {log.proposalId ? `제안 #${log.proposalId} · ` : ''}
+                    {log.actor ? formatAddress(log.actor) : '시스템'} ·{' '}
+                    {log.amountWei ? `${formatWeiToEth(log.amountWei)} ETH` : '금액 없음'}
+                  </span>
+                  {failure ? (
+                    <span>
+                      reasonCode {failure.code} · {failure.label}
+                    </span>
+                  ) : null}
+                </div>
+                <a
+                  href={`https://sepolia.etherscan.io/tx/${log.txHash}`}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  {formatHash(log.txHash)}
+                </a>
+              </div>
+            );
+          })
+        ) : (
+          <p className="muted">선택한 조건의 예산 내역이 없습니다.</p>
+        )}
+      </section>
     </section>
   );
 }
@@ -1766,6 +2150,56 @@ function summarizeBudget(history: TransactionLog[]) {
   };
 }
 
+function filterBudgetHistory(history: TransactionLog[], filter: BudgetFilter) {
+  if (filter === 'all') return history;
+  if (filter === 'deposit') return history.filter((log) => log.eventType === 'DepositReceived');
+  if (filter === 'proposal') return history.filter((log) => log.eventType === 'ProposalCreated');
+  if (filter === 'cancel') return history.filter((log) => log.eventType === 'ProposalCanceled');
+  if (filter === 'vote') return history.filter((log) => log.eventType === 'VoteCast');
+  if (filter === 'evidence') return history.filter(isEvidenceEvent);
+
+  return history.filter(
+    (log) => log.eventType === 'ProposalExecuted' || log.eventType === 'ProposalExecutionFailed',
+  );
+}
+
+function isEvidenceEvent(log: TransactionLog) {
+  return log.eventType === 'EvidenceHashRegistered';
+}
+
+function budgetEventLabel(eventType: string) {
+  const labels: Record<string, string> = {
+    DepositReceived: '회비 입금',
+    EvidenceHashRegistered: '증빙 등록',
+    ProposalCanceled: '제안 취소',
+    ProposalCreated: '제안 생성',
+    ProposalExecuted: '지출 집행 성공',
+    ProposalExecutionFailed: '지출 집행 실패',
+    ProposalFinalized: '투표 결과 확정',
+    VoteCast: '투표',
+  };
+
+  return labels[eventType] ?? eventType;
+}
+
+function getExecutionFailureReason(history: TransactionLog[], proposalId: string) {
+  const failureLog = history.find(
+    (log) => log.eventType === 'ProposalExecutionFailed' && log.proposalId === proposalId,
+  );
+
+  return parseReasonCode(failureLog?.status);
+}
+
+function parseReasonCode(status?: string | null) {
+  const code = status?.match(/(\d+)$/)?.[1] ?? '-';
+  const labels: Record<string, string> = {
+    '1': '잔액 부족',
+    '2': '수신자 송금 실패',
+  };
+
+  return { code, label: labels[code] ?? '알 수 없는 실패 사유' };
+}
+
 function summarizeVotes(history: TransactionLog[], proposalId: string, memberCount: number) {
   const votes = history.filter(
     (log) => log.eventType === 'VoteCast' && log.proposalId === proposalId && log.actor,
@@ -1823,6 +2257,17 @@ function formatWeiToEth(wei: string) {
   const trimmedFraction = fraction.replace(/0+$/, '');
 
   return trimmedFraction ? `${whole}.${trimmedFraction}` : whole.toString();
+}
+
+function formatHash(hash: string) {
+  if (hash.length <= 18) return hash;
+  return `${hash.slice(0, 10)}...${hash.slice(-8)}`;
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function daoStatusLabel(status: number) {
