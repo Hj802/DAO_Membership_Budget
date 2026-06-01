@@ -1,6 +1,19 @@
-import { useEffect, useMemo, useState } from 'react';
-import { DaoStatus, SEPOLIA_CHAIN_ID } from '@dao-budget/shared';
-import { createApiClient, filterDaosByStatus, type ApiClient, type DaoSummary } from './api';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
+import {
+  ApprovalRule,
+  DaoStatus,
+  MAX_DAO_MEMBER_COUNT,
+  ProposalStatus,
+  SEPOLIA_CHAIN_ID,
+} from '@dao-budget/shared';
+import {
+  createApiClient,
+  filterDaosByStatus,
+  type ApiClient,
+  type DaoDetail,
+  type DaoSummary,
+  type TransactionLog,
+} from './api';
 import {
   blockExplorerAddressUrl,
   createInjectedWalletClient,
@@ -8,9 +21,24 @@ import {
   isSepolia,
   type WalletClient,
 } from './wallet';
+import {
+  depositSelector,
+  encodeCreateDaoCall,
+  isAddress,
+  normalizeAddress,
+  toQuantityHex,
+  validateCreateDaoInput,
+  validateDepositEth,
+} from './transactions';
 import './styles.css';
 
 type DaoFilter = 'active' | 'terminated';
+type View = 'list' | 'create' | 'dashboard' | 'deposit';
+type TxState = {
+  status: 'idle' | 'pending' | 'success' | 'error';
+  message: string;
+  txHash?: string;
+};
 
 type WalletState = {
   address: string | null;
@@ -31,14 +59,29 @@ const defaultWalletState: WalletState = {
   error: null,
 };
 
+const idleTx: TxState = { status: 'idle', message: '' };
+
+const factoryAddress = import.meta.env.VITE_FACTORY_ADDRESS ?? '';
+
 export function App({ apiClient, walletClient }: AppProps) {
   const api = useMemo(() => apiClient ?? createApiClient(), [apiClient]);
   const wallet = useMemo(() => walletClient ?? createInjectedWalletClient(), [walletClient]);
   const [walletState, setWalletState] = useState<WalletState>(defaultWalletState);
+  const [view, setView] = useState<View>('list');
   const [daos, setDaos] = useState<DaoSummary[]>([]);
+  const [selectedDaoAddress, setSelectedDaoAddress] = useState<string | null>(null);
+  const [daoDetail, setDaoDetail] = useState<DaoDetail | null>(null);
+  const [budgetHistory, setBudgetHistory] = useState<TransactionLog[]>([]);
   const [daoFilter, setDaoFilter] = useState<DaoFilter>('active');
   const [isLoadingDaos, setIsLoadingDaos] = useState(false);
+  const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [daoError, setDaoError] = useState<string | null>(null);
+  const [txState, setTxState] = useState<TxState>(idleTx);
+
+  const selectedDao = useMemo(
+    () => daos.find((dao) => dao.daoAddress === selectedDaoAddress) ?? daos[0] ?? null,
+    [daos, selectedDaoAddress],
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -60,6 +103,8 @@ export function App({ apiClient, walletClient }: AppProps) {
         address: accounts[0]?.toLowerCase() ?? null,
         error: null,
       }));
+      setView('list');
+      setSelectedDaoAddress(null);
     });
     const removeChainChanged = wallet.onChainChanged((chainId) => {
       setWalletState((current) => ({ ...current, chainId, error: null }));
@@ -75,34 +120,67 @@ export function App({ apiClient, walletClient }: AppProps) {
   useEffect(() => {
     if (!walletState.address) {
       setDaos([]);
+      setSelectedDaoAddress(null);
       setDaoError(null);
       return;
     }
 
+    void refreshDaos(walletState.address);
+  }, [walletState.address]);
+
+  useEffect(() => {
+    if (!walletState.address || !selectedDaoAddress || view === 'list' || view === 'create') {
+      setDaoDetail(null);
+      setBudgetHistory([]);
+      return;
+    }
+
     let isMounted = true;
-    setIsLoadingDaos(true);
+    setIsLoadingDetail(true);
     setDaoError(null);
 
-    api
-      .listMyDaos(walletState.address)
-      .then((myDaos) => {
+    Promise.all([
+      api.getDaoDetail(selectedDaoAddress, walletState.address),
+      api.listBudgetHistory(selectedDaoAddress, walletState.address),
+    ])
+      .then(([detail, history]) => {
         if (!isMounted) return;
-        setDaos(myDaos);
+        setDaoDetail(detail);
+        setBudgetHistory(history);
       })
       .catch((error: Error) => {
         if (!isMounted) return;
-        setDaos([]);
         setDaoError(error.message);
       })
       .finally(() => {
         if (!isMounted) return;
-        setIsLoadingDaos(false);
+        setIsLoadingDetail(false);
       });
 
     return () => {
       isMounted = false;
     };
-  }, [api, walletState.address]);
+  }, [api, selectedDaoAddress, view, walletState.address]);
+
+  async function refreshDaos(address = walletState.address) {
+    if (!address) return;
+
+    setIsLoadingDaos(true);
+    setDaoError(null);
+    try {
+      const myDaos = await api.listMyDaos(address);
+      setDaos(myDaos);
+      setSelectedDaoAddress((current) => {
+        if (current && myDaos.some((dao) => dao.daoAddress === current)) return current;
+        return myDaos[0]?.daoAddress ?? null;
+      });
+    } catch (error) {
+      setDaos([]);
+      setDaoError(error instanceof Error ? error.message : 'DAO 목록을 불러오지 못했습니다.');
+    } finally {
+      setIsLoadingDaos(false);
+    }
+  }
 
   async function connectWallet() {
     if (!wallet.isAvailable()) {
@@ -137,6 +215,89 @@ export function App({ apiClient, walletClient }: AppProps) {
     }
   }
 
+  async function submitCreateDao(input: CreateDaoFormData) {
+    if (!walletState.address) return;
+
+    const validation = validateCreateDaoInput({
+      creatorAddress: walletState.address,
+      name: input.name,
+      additionalMembers: input.additionalMembers,
+      approvalRule: input.approvalRule,
+    });
+    if (!validation.ok) {
+      setTxState({ status: 'error', message: validation.error });
+      return;
+    }
+    if (!isAddress(factoryAddress)) {
+      setTxState({
+        status: 'error',
+        message: 'VITE_FACTORY_ADDRESS가 설정되어야 DAO 생성 트랜잭션을 보낼 수 있습니다.',
+      });
+      return;
+    }
+
+    setTxState({ status: 'pending', message: 'DAO 생성 트랜잭션 승인을 기다리는 중입니다.' });
+    try {
+      const txHash = await wallet.sendTransaction({
+        from: walletState.address,
+        to: normalizeAddress(factoryAddress),
+        data: encodeCreateDaoCall(
+          validation.name,
+          validation.additionalMembers,
+          validation.approvalRule,
+        ),
+      });
+      setTxState({
+        status: 'success',
+        message: 'DAO 생성 트랜잭션이 전송되었습니다. 이벤트 동기화 후 목록에 반영됩니다.',
+        txHash,
+      });
+      await refreshDaos(walletState.address);
+      setView('dashboard');
+    } catch (error) {
+      setTxState({
+        status: 'error',
+        message: error instanceof Error ? error.message : 'DAO 생성 트랜잭션이 실패했습니다.',
+      });
+    }
+  }
+
+  async function submitDeposit(amountEth: string) {
+    if (!walletState.address || !selectedDao) return;
+
+    const validation = validateDepositEth(amountEth);
+    if (!validation.ok) {
+      setTxState({ status: 'error', message: validation.error });
+      return;
+    }
+    if (selectedDao.status !== DaoStatus.Active) {
+      setTxState({ status: 'error', message: '활성 DAO에서만 회비를 입금할 수 있습니다.' });
+      return;
+    }
+
+    setTxState({ status: 'pending', message: '회비 입금 트랜잭션 승인을 기다리는 중입니다.' });
+    try {
+      const txHash = await wallet.sendTransaction({
+        from: walletState.address,
+        to: selectedDao.daoAddress,
+        data: depositSelector,
+        value: toQuantityHex(validation.wei),
+      });
+      setTxState({
+        status: 'success',
+        message: '회비 입금 트랜잭션이 전송되었습니다. 이벤트 동기화 후 잔액과 내역에 반영됩니다.',
+        txHash,
+      });
+      await refreshDaos(walletState.address);
+      setView('dashboard');
+    } catch (error) {
+      setTxState({
+        status: 'error',
+        message: error instanceof Error ? error.message : '회비 입금 트랜잭션이 실패했습니다.',
+      });
+    }
+  }
+
   if (!walletState.address) {
     return (
       <DisconnectedView
@@ -150,14 +311,31 @@ export function App({ apiClient, walletClient }: AppProps) {
   return (
     <ConnectedLayout
       address={walletState.address}
+      budgetHistory={budgetHistory}
       chainId={walletState.chainId}
-      daos={daos}
+      daoDetail={daoDetail}
       daoError={daoError}
       daoFilter={daoFilter}
+      daos={daos}
       isLoadingDaos={isLoadingDaos}
+      isLoadingDetail={isLoadingDetail}
+      onCreateDao={submitCreateDao}
+      onDeposit={submitDeposit}
       onFilterChange={setDaoFilter}
+      onRefresh={() => refreshDaos()}
+      onSelectDao={(daoAddress) => {
+        setSelectedDaoAddress(daoAddress);
+        setView('dashboard');
+        setTxState(idleTx);
+      }}
       onSwitchNetwork={switchToSepolia}
-      selectedDao={filterDaosByStatus(daos, 'active')[0] ?? daos[0] ?? null}
+      onViewChange={(nextView) => {
+        setView(nextView);
+        setTxState(idleTx);
+      }}
+      selectedDao={selectedDao}
+      txState={txState}
+      view={view}
       walletError={walletState.error}
     />
   );
@@ -214,71 +392,183 @@ export function DisconnectedView({
   );
 }
 
-export function ConnectedLayout({
-  address,
-  chainId,
-  daos,
-  daoError,
-  daoFilter,
-  isLoadingDaos,
-  onFilterChange,
-  onSwitchNetwork,
-  selectedDao,
-  walletError,
-}: {
+type ConnectedLayoutProps = {
   address: string;
+  budgetHistory: TransactionLog[];
   chainId: number | null;
-  daos: DaoSummary[];
+  daoDetail: DaoDetail | null;
   daoError: string | null;
   daoFilter: DaoFilter;
+  daos: DaoSummary[];
   isLoadingDaos: boolean;
+  isLoadingDetail: boolean;
+  onCreateDao: (input: CreateDaoFormData) => Promise<void>;
+  onDeposit: (amountEth: string) => Promise<void>;
   onFilterChange: (filter: DaoFilter) => void;
+  onRefresh: () => void;
+  onSelectDao: (daoAddress: string) => void;
   onSwitchNetwork: () => void;
+  onViewChange: (view: View) => void;
   selectedDao: DaoSummary | null;
+  txState: TxState;
+  view: View;
   walletError: string | null;
-}) {
-  const filteredDaos = filterDaosByStatus(daos, daoFilter);
-  const onSepolia = isSepolia(chainId);
+};
+
+export function ConnectedLayout(props: ConnectedLayoutProps) {
+  const onSepolia = isSepolia(props.chainId);
 
   return (
     <div className="app-shell">
-      <header className="topbar connected">
-        <div className="brand">
-          <span className="brand-icon" aria-hidden="true">
-            ◇
-          </span>
-          <span>DAO Vault</span>
-        </div>
-        <nav className="nav-tabs" aria-label="전역 메뉴">
-          <a aria-current="page" href="#my-daos">
-            내 DAO
-          </a>
-          <a aria-disabled="true" href="#dashboard">
-            대시보드
-          </a>
-          <a aria-disabled="true" href="#proposals">
-            제안
-          </a>
-          <a aria-disabled="true" href="#budget">
-            예산 내역
-          </a>
-        </nav>
-        <div className="topbar-actions">
-          <button className="dao-select" disabled={!selectedDao}>
-            <span>{selectedDao?.name ?? 'DAO 선택'}</span>
-            <span className="count-badge">투표 중 {selectedDao?.activeProposalCount ?? 0}</span>
-          </button>
-          <NetworkBadge chainId={chainId} onSwitchNetwork={onSwitchNetwork} />
-          <ExplorerLink address={address} />
-          <button className="primary-button">DAO 생성</button>
-        </div>
-      </header>
-      <main className="content" id="my-daos" data-testid="connected-view">
-        <div className="content-header">
-          <div>
-            <h1>내 DAO 목록</h1>
-            <p>연결된 지갑이 구성원으로 등록된 DAO만 표시됩니다.</p>
+      <Topbar
+        address={props.address}
+        chainId={props.chainId}
+        onSwitchNetwork={props.onSwitchNetwork}
+        onViewChange={props.onViewChange}
+        selectedDao={props.selectedDao}
+        view={props.view}
+      />
+      <main className="content" data-testid="connected-view">
+        {!onSepolia ? (
+          <div className="alert warning" data-testid="network-warning">
+            현재 네트워크가 Sepolia가 아닙니다. 지갑 네트워크를 Sepolia({SEPOLIA_CHAIN_ID})로 변경해
+            주세요.
           </div>
+        ) : null}
+        {props.walletError ? <div className="alert danger">{props.walletError}</div> : null}
+        {props.daoError ? <div className="alert danger">{props.daoError}</div> : null}
+        <TransactionNotice txState={props.txState} />
+
+        {props.view === 'list' ? (
+          <DaoListView
+            daoFilter={props.daoFilter}
+            daos={props.daos}
+            isLoadingDaos={props.isLoadingDaos}
+            onCreate={() => props.onViewChange('create')}
+            onFilterChange={props.onFilterChange}
+            onRefresh={props.onRefresh}
+            onSelectDao={props.onSelectDao}
+          />
+        ) : null}
+        {props.view === 'create' ? (
+          <CreateDaoView
+            creatorAddress={props.address}
+            isPending={props.txState.status === 'pending'}
+            onCancel={() => props.onViewChange('list')}
+            onSubmit={props.onCreateDao}
+          />
+        ) : null}
+        {props.view === 'dashboard' ? (
+          <DashboardView
+            budgetHistory={props.budgetHistory}
+            dao={props.daoDetail ?? props.selectedDao}
+            isLoading={props.isLoadingDetail}
+            onDeposit={() => props.onViewChange('deposit')}
+          />
+        ) : null}
+        {props.view === 'deposit' ? (
+          <DepositView
+            budgetHistory={props.budgetHistory}
+            dao={props.daoDetail ?? props.selectedDao}
+            isPending={props.txState.status === 'pending'}
+            onBack={() => props.onViewChange('dashboard')}
+            onDeposit={props.onDeposit}
+          />
+        ) : null}
+      </main>
+    </div>
+  );
+}
+
+function Topbar({
+  address,
+  chainId,
+  onSwitchNetwork,
+  onViewChange,
+  selectedDao,
+  view,
+}: {
+  address: string;
+  chainId: number | null;
+  onSwitchNetwork: () => void;
+  onViewChange: (view: View) => void;
+  selectedDao: DaoSummary | null;
+  view: View;
+}) {
+  return (
+    <header className="topbar connected">
+      <div className="brand">
+        <span className="brand-icon" aria-hidden="true">
+          ◇
+        </span>
+        <span>DAO Vault</span>
+      </div>
+      <nav className="nav-tabs" aria-label="전역 메뉴">
+        <button
+          aria-current={view === 'list' ? 'page' : undefined}
+          onClick={() => onViewChange('list')}
+        >
+          내 DAO
+        </button>
+        <button
+          aria-current={view === 'dashboard' ? 'page' : undefined}
+          disabled={!selectedDao}
+          onClick={() => onViewChange('dashboard')}
+        >
+          대시보드
+        </button>
+        <button disabled>제안</button>
+        <button disabled>예산 내역</button>
+      </nav>
+      <div className="topbar-actions">
+        <button
+          className="dao-select"
+          disabled={!selectedDao}
+          onClick={() => onViewChange('dashboard')}
+        >
+          <span>{selectedDao?.name ?? 'DAO 선택'}</span>
+          <span className="count-badge">투표 중 {selectedDao?.activeProposalCount ?? 0}</span>
+        </button>
+        <NetworkBadge chainId={chainId} onSwitchNetwork={onSwitchNetwork} />
+        <ExplorerLink address={address} />
+        <button className="primary-button" onClick={() => onViewChange('create')}>
+          DAO 생성
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function DaoListView({
+  daoFilter,
+  daos,
+  isLoadingDaos,
+  onCreate,
+  onFilterChange,
+  onRefresh,
+  onSelectDao,
+}: {
+  daoFilter: DaoFilter;
+  daos: DaoSummary[];
+  isLoadingDaos: boolean;
+  onCreate: () => void;
+  onFilterChange: (filter: DaoFilter) => void;
+  onRefresh: () => void;
+  onSelectDao: (daoAddress: string) => void;
+}) {
+  const filteredDaos = filterDaosByStatus(daos, daoFilter);
+
+  return (
+    <>
+      <div className="content-header" id="my-daos">
+        <div>
+          <h1>내 DAO 목록</h1>
+          <p>연결된 지갑이 구성원으로 등록된 DAO만 표시됩니다.</p>
+        </div>
+        <div className="header-actions">
+          <button className="secondary-button" onClick={onRefresh}>
+            동기화
+          </button>
           <div className="segmented-control" role="tablist" aria-label="DAO 상태 필터">
             <button
               aria-selected={daoFilter === 'active'}
@@ -296,33 +586,411 @@ export function ConnectedLayout({
             </button>
           </div>
         </div>
+      </div>
 
-        {!onSepolia ? (
-          <div className="alert warning" data-testid="network-warning">
-            현재 네트워크가 Sepolia가 아닙니다. 지갑 네트워크를 Sepolia({SEPOLIA_CHAIN_ID})로 변경해
-            주세요.
+      <section className="dao-grid" aria-label="내 DAO">
+        {isLoadingDaos ? <DaoSkeleton /> : null}
+        {!isLoadingDaos &&
+          filteredDaos.map((dao) => (
+            <DaoCard dao={dao} key={dao.daoAddress} onOpen={() => onSelectDao(dao.daoAddress)} />
+          ))}
+        {!isLoadingDaos && filteredDaos.length === 0 ? (
+          <div className="empty-state">
+            <h2>{daoFilter === 'active' ? '활성 DAO가 없습니다.' : '종료 DAO가 없습니다.'}</h2>
+            <p>DAO를 새로 만들거나, 다른 사용자가 내 지갑 주소를 구성원으로 등록하면 표시됩니다.</p>
           </div>
         ) : null}
-        {walletError ? <div className="alert danger">{walletError}</div> : null}
-        {daoError ? <div className="alert danger">{daoError}</div> : null}
+        <button className="create-card" onClick={onCreate}>
+          <span aria-hidden="true">＋</span>
+          <strong>새 DAO 생성</strong>
+          <small>새 회비 금고와 구성원 목록을 생성하세요.</small>
+        </button>
+      </section>
+    </>
+  );
+}
 
-        <section className="dao-grid" aria-label="내 DAO">
-          {isLoadingDaos ? <DaoSkeleton /> : null}
-          {!isLoadingDaos && filteredDaos.map((dao) => <DaoCard dao={dao} key={dao.daoAddress} />)}
-          {!isLoadingDaos && filteredDaos.length === 0 ? (
-            <div className="empty-state">
-              <h2>{daoFilter === 'active' ? '활성 DAO가 없습니다.' : '종료 DAO가 없습니다.'}</h2>
-              <p>이 지갑이 구성원으로 등록된 DAO만 이 목록에 표시됩니다.</p>
-            </div>
-          ) : null}
-          <button className="create-card">
-            <span aria-hidden="true">＋</span>
-            <strong>새 DAO 생성</strong>
-            <small>새 회비 금고와 구성원 목록을 생성하세요.</small>
+type CreateDaoFormData = {
+  name: string;
+  additionalMembers: string[];
+  approvalRule: ApprovalRule;
+};
+
+function CreateDaoView({
+  creatorAddress,
+  isPending,
+  onCancel,
+  onSubmit,
+}: {
+  creatorAddress: string;
+  isPending: boolean;
+  onCancel: () => void;
+  onSubmit: (input: CreateDaoFormData) => Promise<void>;
+}) {
+  const [name, setName] = useState('');
+  const [memberInput, setMemberInput] = useState('');
+  const [additionalMembers, setAdditionalMembers] = useState<string[]>([]);
+  const [approvalRule, setApprovalRule] = useState<ApprovalRule>(ApprovalRule.Majority);
+  const [formError, setFormError] = useState<string | null>(null);
+  const totalMemberCount = additionalMembers.length + 1;
+
+  function addMember() {
+    const validation = validateCreateDaoInput({
+      creatorAddress,
+      name: name || 'draft',
+      additionalMembers: [...additionalMembers, memberInput],
+      approvalRule,
+    });
+    if (!validation.ok) {
+      setFormError(validation.error);
+      return;
+    }
+
+    setAdditionalMembers(validation.additionalMembers);
+    setMemberInput('');
+    setFormError(null);
+  }
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const validation = validateCreateDaoInput({
+      creatorAddress,
+      name,
+      additionalMembers,
+      approvalRule,
+    });
+    if (!validation.ok) {
+      setFormError(validation.error);
+      return;
+    }
+    setFormError(null);
+    void onSubmit(validation);
+  }
+
+  return (
+    <form className="form-page" onSubmit={submit}>
+      <div className="content-header">
+        <div>
+          <h1>DAO 생성</h1>
+          <p>조직명, 추가 구성원 주소, 기본 승인 기준을 입력합니다.</p>
+        </div>
+      </div>
+      {formError ? <div className="alert danger">{formError}</div> : null}
+      <section className="form-grid">
+        <div className="form-panel wide">
+          <label htmlFor="dao-name">조직명</label>
+          <input
+            id="dao-name"
+            maxLength={80}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="블록체인 스터디"
+            value={name}
+          />
+          <p>이 이름은 온체인에 기록되고 모든 구성원에게 표시됩니다.</p>
+        </div>
+        <div className="info-panel">
+          <strong>생성자 자동 포함</strong>
+          <code>{formatAddress(creatorAddress)}</code>
+        </div>
+      </section>
+      <section className="form-panel">
+        <div className="panel-title">
+          <div>
+            <h2>구성원 관리</h2>
+            <p>생성자를 제외한 추가 구성원 주소를 등록하세요.</p>
+          </div>
+          <span className="count-badge">
+            {totalMemberCount} / {MAX_DAO_MEMBER_COUNT}
+          </span>
+        </div>
+        <div className="member-row fixed">
+          <span>생성자</span>
+          <code>{creatorAddress}</code>
+        </div>
+        {additionalMembers.map((member) => (
+          <div className="member-row" key={member}>
+            <span>구성원</span>
+            <code>{member}</code>
+            <button
+              className="text-button danger"
+              onClick={() =>
+                setAdditionalMembers((members) => members.filter((item) => item !== member))
+              }
+              type="button"
+            >
+              삭제
+            </button>
+          </div>
+        ))}
+        <div className="inline-form">
+          <input
+            className="mono-input"
+            onChange={(event) => setMemberInput(event.target.value)}
+            placeholder="0x..."
+            value={memberInput}
+          />
+          <button className="secondary-button" onClick={addMember} type="button">
+            추가
           </button>
-        </section>
-      </main>
-    </div>
+        </div>
+      </section>
+      <section className="form-panel">
+        <h2>기본 승인 기준</h2>
+        <div className="radio-grid">
+          <label>
+            <input
+              checked={approvalRule === ApprovalRule.Majority}
+              name="approvalRule"
+              onChange={() => setApprovalRule(ApprovalRule.Majority)}
+              type="radio"
+            />
+            <span>과반 찬성</span>
+            <small>전체 구성원 50% 초과 찬성</small>
+          </label>
+          <label>
+            <input
+              checked={approvalRule === ApprovalRule.TwoThirds}
+              name="approvalRule"
+              onChange={() => setApprovalRule(ApprovalRule.TwoThirds)}
+              type="radio"
+            />
+            <span>2/3 찬성</span>
+            <small>전체 구성원 66.7% 이상 찬성</small>
+          </label>
+        </div>
+      </section>
+      <div className="form-actions">
+        <button className="secondary-button" onClick={onCancel} type="button">
+          취소
+        </button>
+        <button className="primary-button" disabled={isPending} type="submit">
+          {isPending ? '트랜잭션 대기 중' : 'DAO 생성'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function DashboardView({
+  budgetHistory,
+  dao,
+  isLoading,
+  onDeposit,
+}: {
+  budgetHistory: TransactionLog[];
+  dao: DaoSummary | DaoDetail | null;
+  isLoading: boolean;
+  onDeposit: () => void;
+}) {
+  if (!dao) {
+    return (
+      <div className="empty-state">
+        <h1>선택된 DAO가 없습니다.</h1>
+        <p>내 DAO 목록에서 DAO를 선택하거나 새 DAO를 생성하세요.</p>
+      </div>
+    );
+  }
+
+  const metrics = summarizeBudget(budgetHistory);
+  const disabled = dao.status !== DaoStatus.Active;
+  const recentProposals = 'proposals' in dao ? dao.proposals.slice(0, 3) : [];
+
+  return (
+    <section className="dashboard" data-testid="dashboard-view">
+      <div className="dashboard-header">
+        <div>
+          <h1>{dao.name}</h1>
+          <p>
+            상태: {daoStatusLabel(dao.status)} · 구성원 {dao.memberCount}명 · 기준:{' '}
+            {dao.approvalRule === ApprovalRule.TwoThirds ? '2/3 찬성' : '과반 찬성'}
+          </p>
+        </div>
+        <div className="dashboard-actions">
+          <button className="secondary-button" disabled={disabled} onClick={onDeposit}>
+            회비 입금
+          </button>
+          <button className="primary-button" disabled>
+            지출 제안
+          </button>
+          <button className="secondary-button" disabled>
+            예산 내역
+          </button>
+        </div>
+      </div>
+      {disabled ? (
+        <div className="alert warning">종료 상태의 DAO에서는 입금할 수 없습니다.</div>
+      ) : null}
+      {isLoading ? <div className="alert warning">DAO 상세 정보를 불러오는 중입니다.</div> : null}
+      <div className="metric-grid">
+        <MetricCard
+          label="현재 금고 잔액"
+          value={`${dao.balanceEth ?? '-'} ETH`}
+          note="온체인 금고 기준"
+        />
+        <MetricCard label="총 입금" value={`${metrics.totalDepositsEth} ETH`} />
+        <MetricCard label="총 집행" value={`${metrics.totalExecutedEth} ETH`} />
+        <MetricCard label="집행 가능" value={`${metrics.executableCount}건`} />
+      </div>
+      <section className="panel-table">
+        <div className="panel-title">
+          <h2>최근 제안</h2>
+          <button className="text-button" disabled>
+            전체 보기
+          </button>
+        </div>
+        {recentProposals.length > 0 ? (
+          recentProposals.map((proposal) => (
+            <div className="list-row" key={proposal.proposalId}>
+              <div>
+                <strong>{proposal.title}</strong>
+                <span>
+                  {proposal.amountWei ? `${formatWeiToEth(proposal.amountWei)} ETH` : '금액 없음'}
+                </span>
+              </div>
+              <span className="status-badge">{proposalStatusLabel(proposal.status)}</span>
+            </div>
+          ))
+        ) : (
+          <p className="muted">최근 제안이 없습니다.</p>
+        )}
+      </section>
+      <section className="verification-panel">
+        <div>
+          <h2>온체인 검증 정보</h2>
+          <p>입금 → 제안 → 투표 → 집행 → 증빙 흐름을 온체인 이벤트와 해시로 확인합니다.</p>
+        </div>
+        <a href={blockExplorerAddressUrl(dao.daoAddress)} rel="noreferrer" target="_blank">
+          {formatAddress(dao.daoAddress)}
+        </a>
+      </section>
+    </section>
+  );
+}
+
+function DepositView({
+  budgetHistory,
+  dao,
+  isPending,
+  onBack,
+  onDeposit,
+}: {
+  budgetHistory: TransactionLog[];
+  dao: DaoSummary | DaoDetail | null;
+  isPending: boolean;
+  onBack: () => void;
+  onDeposit: (amountEth: string) => Promise<void>;
+}) {
+  const [amountEth, setAmountEth] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
+
+  if (!dao) {
+    return (
+      <div className="empty-state">
+        <h1>입금할 DAO를 선택하세요.</h1>
+        <button className="secondary-button" onClick={onBack}>
+          대시보드로 돌아가기
+        </button>
+      </div>
+    );
+  }
+
+  const disabled = dao.status !== DaoStatus.Active;
+  const depositRows = budgetHistory
+    .filter((log) => log.eventType === 'DepositReceived')
+    .slice(0, 5);
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const validation = validateDepositEth(amountEth);
+    if (!validation.ok) {
+      setFormError(validation.error);
+      return;
+    }
+    setFormError(null);
+    void onDeposit(amountEth);
+  }
+
+  return (
+    <form className="deposit-page" onSubmit={submit}>
+      <button className="text-button" onClick={onBack} type="button">
+        대시보드로 돌아가기
+      </button>
+      <div className="dashboard-header">
+        <div>
+          <h1>회비 입금</h1>
+          <p>
+            {dao.name} · 금고 주소{' '}
+            <a href={blockExplorerAddressUrl(dao.daoAddress)} rel="noreferrer" target="_blank">
+              {formatAddress(dao.daoAddress)}
+            </a>
+          </p>
+        </div>
+      </div>
+      {disabled ? (
+        <div className="alert warning">활성 DAO에서만 회비를 입금할 수 있습니다.</div>
+      ) : null}
+      {formError ? <div className="alert danger">{formError}</div> : null}
+      <section className="deposit-grid">
+        <div className="form-panel">
+          <label htmlFor="deposit-amount">금액 (ETH)</label>
+          <div className="amount-input">
+            <input
+              disabled={disabled || isPending}
+              id="deposit-amount"
+              inputMode="decimal"
+              onChange={(event) => setAmountEth(event.target.value)}
+              placeholder="0.00"
+              value={amountEth}
+            />
+            <span>ETH</span>
+          </div>
+          <button className="primary-button full" disabled={disabled || isPending} type="submit">
+            {isPending ? '입금 대기 중' : '회비 입금'}
+          </button>
+        </div>
+        <div className="form-panel">
+          <h2>트랜잭션 요약</h2>
+          <dl className="summary-list">
+            <div>
+              <dt>입금 금액</dt>
+              <dd>{amountEth || '0'} ETH</dd>
+            </div>
+            <div>
+              <dt>호출 함수</dt>
+              <dd>deposit()</dd>
+            </div>
+            <div>
+              <dt>네트워크</dt>
+              <dd>Sepolia</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+      <section className="panel-table">
+        <div className="panel-title">
+          <h2>최근 입금 내역</h2>
+        </div>
+        {depositRows.length > 0 ? (
+          depositRows.map((log) => (
+            <div className="list-row" key={`${log.txHash}:${log.logIndex}`}>
+              <div>
+                <strong>{log.actor ? formatAddress(log.actor) : '-'}</strong>
+                <span>{log.amountWei ? `${formatWeiToEth(log.amountWei)} ETH` : '-'}</span>
+              </div>
+              <a
+                href={`https://sepolia.etherscan.io/tx/${log.txHash}`}
+                rel="noreferrer"
+                target="_blank"
+              >
+                확인됨
+              </a>
+            </div>
+          ))
+        ) : (
+          <p className="muted">아직 입금 내역이 없습니다.</p>
+        )}
+      </section>
+    </form>
   );
 }
 
@@ -373,7 +1041,7 @@ function ExplorerLink({ address }: { address: string }) {
   );
 }
 
-function DaoCard({ dao }: { dao: DaoSummary }) {
+function DaoCard({ dao, onOpen }: { dao: DaoSummary; onOpen: () => void }) {
   const proposalCount = dao.activeProposalCount ?? 0;
 
   return (
@@ -412,10 +1080,41 @@ function DaoCard({ dao }: { dao: DaoSummary }) {
         </div>
       </dl>
       <div className="dao-card-footer">
-        <span>투표 기준 {dao.approvalRule === 1 ? '2/3 찬성' : '과반 찬성'}</span>
-        <button>대시보드 열기</button>
+        <span>
+          투표 기준 {dao.approvalRule === ApprovalRule.TwoThirds ? '2/3 찬성' : '과반 찬성'}
+        </span>
+        <button onClick={onOpen}>대시보드 열기</button>
       </div>
     </article>
+  );
+}
+
+function MetricCard({ label, note, value }: { label: string; note?: string; value: string }) {
+  return (
+    <article className="metric-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      {note ? <small>{note}</small> : null}
+    </article>
+  );
+}
+
+function TransactionNotice({ txState }: { txState: TxState }) {
+  if (txState.status === 'idle') return null;
+
+  return (
+    <div className={`alert ${txState.status === 'error' ? 'danger' : 'warning'}`}>
+      {txState.message}{' '}
+      {txState.txHash ? (
+        <a
+          href={`https://sepolia.etherscan.io/tx/${txState.txHash}`}
+          rel="noreferrer"
+          target="_blank"
+        >
+          트랜잭션 보기
+        </a>
+      ) : null}
+    </div>
   );
 }
 
@@ -427,4 +1126,44 @@ function DaoSkeleton() {
       <div />
     </article>
   );
+}
+
+function summarizeBudget(history: TransactionLog[]) {
+  const totalDeposits = history
+    .filter((log) => log.eventType === 'DepositReceived' && log.amountWei)
+    .reduce((sum, log) => sum + BigInt(log.amountWei ?? '0'), 0n);
+  const totalExecuted = history
+    .filter((log) => log.eventType === 'ProposalExecuted' && log.amountWei)
+    .reduce((sum, log) => sum + BigInt(log.amountWei ?? '0'), 0n);
+  const executableCount = history.filter((log) => log.status === 'proposal:3').length;
+
+  return {
+    executableCount,
+    totalDepositsEth: formatWeiToEth(totalDeposits.toString()),
+    totalExecutedEth: formatWeiToEth(totalExecuted.toString()),
+  };
+}
+
+function formatWeiToEth(wei: string) {
+  const value = BigInt(wei);
+  const whole = value / 10n ** 18n;
+  const fraction = (value % 10n ** 18n).toString().padStart(18, '0').slice(0, 4);
+  const trimmedFraction = fraction.replace(/0+$/, '');
+
+  return trimmedFraction ? `${whole}.${trimmedFraction}` : whole.toString();
+}
+
+function daoStatusLabel(status: number) {
+  if (status === DaoStatus.Terminated) return '종료';
+  if (status === DaoStatus.TerminationVoting) return '종료 투표 중';
+  return '활성';
+}
+
+function proposalStatusLabel(status: number | undefined) {
+  if (status === ProposalStatus.Executable) return '집행 가능';
+  if (status === ProposalStatus.Executed) return '집행 완료';
+  if (status === ProposalStatus.Rejected) return '부결';
+  if (status === ProposalStatus.Canceled) return '취소됨';
+  if (status === ProposalStatus.ExecutionFailed) return '집행 실패';
+  return '투표 중';
 }

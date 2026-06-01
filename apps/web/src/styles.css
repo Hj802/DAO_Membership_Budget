@@ -2,7 +2,13 @@
   color: #191c1e;
   background: #f7f9fb;
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
 }
@@ -82,6 +88,7 @@ button:disabled {
 }
 
 .nav-tabs a,
+.nav-tabs button,
 .dao-select,
 .network-badge,
 .address-link {
@@ -92,13 +99,17 @@ button:disabled {
   white-space: nowrap;
 }
 
-.nav-tabs a {
+.nav-tabs a,
+.nav-tabs button {
+  border: 0;
+  background: transparent;
   color: #434655;
   font-size: 13px;
   font-weight: 700;
 }
 
-.nav-tabs a[aria-current="page"] {
+.nav-tabs a[aria-current='page'],
+.nav-tabs button[aria-current='page'] {
   background: #f2f4f6;
   color: #004ac6;
 }
@@ -111,6 +122,31 @@ button:disabled {
   padding: 10px 16px;
   font-weight: 800;
   box-shadow: 0 8px 18px rgba(0, 74, 198, 0.16);
+}
+
+.secondary-button {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  color: #191c1e;
+  padding: 10px 16px;
+  font-weight: 800;
+}
+
+.text-button {
+  border: 0;
+  background: transparent;
+  color: #004ac6;
+  font-weight: 800;
+  padding: 0;
+}
+
+.text-button.danger {
+  color: #93000a;
+}
+
+.primary-button.full {
+  width: 100%;
 }
 
 .primary-button.large {
@@ -209,6 +245,14 @@ button:disabled {
   margin-bottom: 24px;
 }
 
+.header-actions,
+.dashboard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
 .content-header h1 {
   margin: 0 0 8px;
   font-size: 32px;
@@ -236,7 +280,7 @@ button:disabled {
   font-weight: 800;
 }
 
-.segmented-control button[aria-selected="true"] {
+.segmented-control button[aria-selected='true'] {
   background: #fff;
   color: #004ac6;
   box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
@@ -246,6 +290,268 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+
+.form-page,
+.deposit-page,
+.dashboard {
+  display: grid;
+  gap: 18px;
+}
+
+.form-grid,
+.deposit-grid,
+.metric-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.form-grid {
+  grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr);
+}
+
+.deposit-grid {
+  grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+}
+
+.metric-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.form-panel,
+.info-panel,
+.metric-card,
+.panel-table,
+.verification-panel {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  padding: 24px;
+  box-shadow: 0 1px 5px rgba(15, 23, 42, 0.04);
+}
+
+.form-panel.wide {
+  min-height: 160px;
+}
+
+.form-panel label {
+  display: block;
+  margin-bottom: 8px;
+  color: #545f73;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.form-panel input,
+.amount-input input {
+  width: 100%;
+  border: 1px solid #c3c6d7;
+  border-radius: 8px;
+  background: #fff;
+  color: #191c1e;
+  padding: 12px 14px;
+  font: inherit;
+}
+
+.form-panel p,
+.muted {
+  color: #545f73;
+}
+
+.info-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  background: #dbe1ff;
+  color: #00174b;
+}
+
+.info-panel code,
+.member-row code,
+.summary-list dd {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.panel-title h2,
+.panel-title p {
+  margin: 0;
+}
+
+.member-row {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  margin-bottom: 10px;
+  padding: 12px;
+}
+
+.member-row.fixed {
+  border-style: dashed;
+  background: #f2f4f6;
+}
+
+.inline-form {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.mono-input {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.radio-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.radio-grid label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 12px;
+  border: 1px solid #c3c6d7;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.radio-grid small {
+  grid-column: 2;
+  color: #545f73;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.dashboard-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.dashboard-header h1 {
+  margin: 0 0 8px;
+  font-size: 32px;
+}
+
+.dashboard-header p {
+  margin: 0;
+  color: #545f73;
+}
+
+.metric-card {
+  min-height: 136px;
+}
+
+.metric-card span {
+  color: #545f73;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.metric-card strong {
+  display: block;
+  margin: 10px 0;
+  color: #004ac6;
+  font-size: 28px;
+}
+
+.metric-card small {
+  color: #10b981;
+  font-weight: 800;
+}
+
+.list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid #e2e8f0;
+  padding: 16px 0;
+}
+
+.list-row:first-of-type {
+  border-top: 0;
+}
+
+.list-row div {
+  display: grid;
+  gap: 4px;
+}
+
+.list-row span {
+  color: #545f73;
+}
+
+.verification-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: #191c1e;
+  color: #fff;
+}
+
+.verification-panel p {
+  margin: 8px 0 0;
+  color: #eff1f3;
+}
+
+.verification-panel a {
+  color: #b4c5ff;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.amount-input {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #c3c6d7;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.amount-input input {
+  border: 0;
+  padding: 6px 0;
+  font-size: 24px;
+  font-weight: 800;
+}
+
+.amount-input input:focus {
+  outline: none;
+}
+
+.summary-list {
+  display: grid;
+  gap: 12px;
+}
+
+.summary-list div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.summary-list dt {
+  color: #545f73;
 }
 
 .dao-card,
@@ -272,7 +578,7 @@ button:disabled {
 .contract-link,
 .address-link {
   color: #004ac6;
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 13px;
 }
 
@@ -435,7 +741,10 @@ button:disabled {
   }
 
   .hero,
-  .dao-grid {
+  .dao-grid,
+  .form-grid,
+  .deposit-grid,
+  .metric-grid {
     grid-template-columns: 1fr;
   }
 

@@ -10,8 +10,16 @@ export type WalletClient = {
   requestConnection(): Promise<WalletSnapshot>;
   getSnapshot(): Promise<WalletSnapshot>;
   switchToSepolia(): Promise<void>;
+  sendTransaction(input: SendTransactionInput): Promise<string>;
   onAccountsChanged(listener: (accounts: string[]) => void): () => void;
   onChainChanged(listener: (chainId: number) => void): () => void;
+};
+
+export type SendTransactionInput = {
+  from: string;
+  to: string;
+  data: string;
+  value?: string;
 };
 
 type EthereumProvider = {
@@ -102,6 +110,31 @@ export function createInjectedWalletClient(): WalletClient {
         method: 'wallet_switchEthereumChain',
         params: [{ chainId: sepoliaChainHex }],
       });
+    },
+
+    async sendTransaction(input) {
+      const ethereum = provider();
+      if (!ethereum) {
+        throw new Error('브라우저 지갑을 찾을 수 없습니다.');
+      }
+
+      const txHash = await ethereum.request({
+        method: 'eth_sendTransaction',
+        params: [
+          {
+            from: input.from,
+            to: input.to,
+            data: input.data,
+            value: input.value ?? '0x0',
+          },
+        ],
+      });
+
+      if (typeof txHash !== 'string') {
+        throw new Error('트랜잭션 해시를 받지 못했습니다.');
+      }
+
+      return txHash;
     },
 
     onAccountsChanged(listener) {
