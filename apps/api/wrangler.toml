@@ -1,0 +1,19 @@
+name = "dao-budget-api"
+main = "src/app.ts"
+compatibility_date = "2026-06-01"
+
+[vars]
+APP_ENV = "local"
+CHAIN_ID = "11155111"
+
+[[d1_databases]]
+binding = "DAO_BUDGET_DB"
+database_name = "dao-budget"
+database_id = "local-d1-placeholder"
+
+[[r2_buckets]]
+binding = "DAO_BUDGET_EVIDENCE_BUCKET"
+bucket_name = "dao-budget-evidence"
+
+[triggers]
+crons = ["*/10 * * * *"]

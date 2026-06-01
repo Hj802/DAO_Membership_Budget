@@ -3,7 +3,14 @@ import { config } from 'dotenv';
 
 config({ path: existsSync('.env') ? '.env' : '.env.example' });
 
-const requiredKeys = ['NODE_ENV', 'APP_ENV', 'VITE_CHAIN_ID'];
+const requiredKeys = [
+  'NODE_ENV',
+  'APP_ENV',
+  'VITE_CHAIN_ID',
+  'CHAIN_ID',
+  'DAO_BUDGET_DB_BINDING',
+  'DAO_BUDGET_EVIDENCE_BUCKET_BINDING',
+];
 const missingKeys = requiredKeys.filter((key) => !process.env[key]);
 
 if (missingKeys.length > 0) {
@@ -13,6 +20,18 @@ if (missingKeys.length > 0) {
 
 if (process.env.VITE_CHAIN_ID !== '11155111') {
   console.error('VITE_CHAIN_ID must be 11155111 for the Sepolia MVP environment.');
+  process.exit(1);
+}
+
+if (process.env.CHAIN_ID !== '11155111') {
+  console.error('CHAIN_ID must be 11155111 for the Sepolia MVP environment.');
+  process.exit(1);
+}
+
+if (process.env.SEPOLIA_PRIVATE_KEY && process.env.APP_ENV !== 'local') {
+  console.error(
+    'SEPOLIA_PRIVATE_KEY is for local/CI contract deployment and must not be configured for API runtime environments.',
+  );
   process.exit(1);
 }
 
