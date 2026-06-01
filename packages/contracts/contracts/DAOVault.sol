@@ -63,6 +63,7 @@ contract DAOVault {
     mapping(uint256 => Proposal) private _proposals;
     mapping(uint256 => mapping(address => bool)) private _hasVoted;
     mapping(uint256 => mapping(address => bool)) private _voteSupport;
+    mapping(uint256 => bytes32[]) private _evidenceHashes;
     bool private _executionLocked;
 
     event DepositReceived(
@@ -120,6 +121,22 @@ contract DAOVault {
         uint8 reasonCode,
         uint256 timestamp
     );
+    event TerminationExecuted(
+        address indexed daoAddress,
+        uint256 indexed proposalId,
+        uint256 memberCount,
+        uint256 refundPerMember,
+        uint256 remainderWei,
+        address indexed remainderRecipient,
+        uint256 timestamp
+    );
+    event EvidenceHashRegistered(
+        address indexed daoAddress,
+        uint256 indexed proposalId,
+        bytes32 evidenceHash,
+        address indexed uploader,
+        uint256 timestamp
+    );
 
     error EmptyName();
     error InvalidCreator();
@@ -147,6 +164,10 @@ contract DAOVault {
     error ProposalDeadlineNotReached();
     error ProposalNotExecutable(ProposalStatus currentStatus);
     error ProposalNotSpending(ProposalType proposalType);
+    error ProposalNotTermination(ProposalType proposalType);
+    error TerminationTransferFailed(address recipient, uint256 amountWei);
+    error EvidenceRegistrationNotAllowed();
+    error InvalidEvidenceHash();
     error ReentrantExecution();
 
     constructor(
@@ -212,6 +233,12 @@ contract DAOVault {
         if (!_proposalExists(proposalId)) revert ProposalNotFound(proposalId);
 
         return (_hasVoted[proposalId][voter], _voteSupport[proposalId][voter]);
+    }
+
+    function getEvidenceHashes(uint256 proposalId) external view returns (bytes32[] memory) {
+        if (!_proposalExists(proposalId)) revert ProposalNotFound(proposalId);
+
+        return _evidenceHashes[proposalId];
     }
 
     function deposit() external payable {
@@ -411,6 +438,71 @@ contract DAOVault {
         }
     }
 
+    function executeTermination(uint256 proposalId) external nonReentrantExecution {
+        if (!_proposalExists(proposalId)) revert ProposalNotFound(proposalId);
+        if (!isMember[msg.sender]) revert NotMember(msg.sender);
+        if (status != DaoStatus.TerminationVoting) revert DaoNotActive(status);
+
+        Proposal storage proposal = _proposals[proposalId];
+
+        if (proposal.proposalType != ProposalType.Termination) {
+            revert ProposalNotTermination(proposal.proposalType);
+        }
+        if (proposal.proposalStatus != ProposalStatus.Executable) {
+            revert ProposalNotExecutable(proposal.proposalStatus);
+        }
+
+        uint256 totalMemberCount = _members.length;
+        uint256 refundPerMember = address(this).balance / totalMemberCount;
+        uint256 remainderWei = address(this).balance - (refundPerMember * totalMemberCount);
+
+        proposal.proposalStatus = ProposalStatus.Executed;
+        status = DaoStatus.Terminated;
+
+        for (uint256 i = 0; i < totalMemberCount; i++) {
+            _transferTerminationRefund(_members[i], refundPerMember);
+        }
+
+        if (remainderWei > 0) {
+            _transferTerminationRefund(creator, remainderWei);
+        }
+
+        emit TerminationExecuted(
+            address(this),
+            proposalId,
+            totalMemberCount,
+            refundPerMember,
+            remainderWei,
+            creator,
+            block.timestamp
+        );
+    }
+
+    function registerEvidenceHash(uint256 proposalId, bytes32 evidenceHash) external {
+        if (!_proposalExists(proposalId)) revert ProposalNotFound(proposalId);
+        if (evidenceHash == bytes32(0)) revert InvalidEvidenceHash();
+
+        Proposal storage proposal = _proposals[proposalId];
+
+        if (proposal.proposer != msg.sender) revert NotProposer(msg.sender);
+        if (
+            proposal.proposalType != ProposalType.Spending ||
+            proposal.proposalStatus != ProposalStatus.Executed
+        ) {
+            revert EvidenceRegistrationNotAllowed();
+        }
+
+        _evidenceHashes[proposalId].push(evidenceHash);
+
+        emit EvidenceHashRegistered(
+            address(this),
+            proposalId,
+            evidenceHash,
+            msg.sender,
+            block.timestamp
+        );
+    }
+
     function _addMember(address member) private {
         if (member == address(0)) revert InvalidMember();
         if (isMember[member]) revert DuplicateMember(member);
@@ -465,5 +557,12 @@ contract DAOVault {
             reasonCode,
             block.timestamp
         );
+    }
+
+    function _transferTerminationRefund(address recipient, uint256 amountWei) private {
+        if (amountWei == 0) return;
+
+        (bool success, ) = recipient.call{value: amountWei}("");
+        if (!success) revert TerminationTransferFailed(recipient, amountWei);
     }
 }
