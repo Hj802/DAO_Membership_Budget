@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@noble/hashes": "^1.4.0",
     "@dao-budget/shared": "0.1.0",
     "dotenv": "^16.4.7"
   },
