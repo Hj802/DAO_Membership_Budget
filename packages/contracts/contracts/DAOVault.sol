@@ -42,11 +42,45 @@ contract DAOVault {
     address[] private _members;
     mapping(address => bool) public isMember;
 
+    struct Proposal {
+        ProposalType proposalType;
+        address proposer;
+        uint256 amountWei;
+        address recipient;
+        uint256 deadline;
+        ApprovalType approvalType;
+        ProposalStatus proposalStatus;
+        bytes32 contentHash;
+        bytes32 cancelReasonHash;
+        uint256 canceledAt;
+    }
+
+    uint256 private _nextProposalId = 1;
+    mapping(uint256 => Proposal) private _proposals;
+
     event DepositReceived(
         address indexed daoAddress,
         address indexed depositor,
         uint256 amount,
         uint256 balanceAfter,
+        uint256 timestamp
+    );
+    event ProposalCreated(
+        address indexed daoAddress,
+        uint256 indexed proposalId,
+        uint8 proposalType,
+        address indexed proposer,
+        uint256 amountWei,
+        address recipient,
+        uint256 deadline,
+        uint8 approvalType,
+        bytes32 contentHash
+    );
+    event ProposalCanceled(
+        address indexed daoAddress,
+        uint256 indexed proposalId,
+        address indexed canceledBy,
+        bytes32 cancelReasonHash,
         uint256 timestamp
     );
 
@@ -59,6 +93,19 @@ contract DAOVault {
     error NotMember(address account);
     error DaoNotActive(DaoStatus currentStatus);
     error ZeroDeposit();
+    error InvalidProposalType();
+    error InvalidApprovalType();
+    error InvalidContentHash();
+    error InvalidDeadline();
+    error InvalidSpendingAmount();
+    error InvalidRecipient();
+    error InvalidTerminationFields();
+    error ActiveProposalExists(uint256 proposalId);
+    error ProposalNotFound(uint256 proposalId);
+    error NotProposer(address account);
+    error ProposalNotVoting(ProposalStatus currentStatus);
+    error ProposalDeadlinePassed();
+    error InvalidCancelReasonHash();
 
     constructor(
         string memory daoName,
@@ -95,6 +142,16 @@ contract DAOVault {
         return address(this).balance;
     }
 
+    function proposalCount() external view returns (uint256) {
+        return _nextProposalId - 1;
+    }
+
+    function getProposal(uint256 proposalId) external view returns (Proposal memory) {
+        if (!_proposalExists(proposalId)) revert ProposalNotFound(proposalId);
+
+        return _proposals[proposalId];
+    }
+
     function deposit() external payable {
         if (!isMember[msg.sender]) revert NotMember(msg.sender);
         if (status != DaoStatus.Active) revert DaoNotActive(status);
@@ -109,11 +166,112 @@ contract DAOVault {
         );
     }
 
+    function createProposal(
+        uint8 proposalType,
+        uint256 amountWei,
+        address recipient,
+        uint256 deadline,
+        uint8 approvalType,
+        bytes32 contentHash
+    ) external returns (uint256 proposalId) {
+        if (!isMember[msg.sender]) revert NotMember(msg.sender);
+        if (status != DaoStatus.Active) revert DaoNotActive(status);
+        if (proposalType > uint8(ProposalType.Termination)) revert InvalidProposalType();
+        if (approvalType > uint8(ApprovalType.Unanimous)) revert InvalidApprovalType();
+        if (contentHash == bytes32(0)) revert InvalidContentHash();
+        if (deadline <= block.timestamp) revert InvalidDeadline();
+
+        ProposalType typedProposalType = ProposalType(proposalType);
+
+        if (typedProposalType == ProposalType.Spending) {
+            if (amountWei == 0) revert InvalidSpendingAmount();
+            if (recipient == address(0)) revert InvalidRecipient();
+        } else {
+            if (amountWei != 0 || recipient != address(0)) revert InvalidTerminationFields();
+            _revertIfActiveProposalExists();
+            status = DaoStatus.TerminationVoting;
+        }
+
+        proposalId = _nextProposalId;
+        _nextProposalId += 1;
+
+        _proposals[proposalId] = Proposal({
+            proposalType: typedProposalType,
+            proposer: msg.sender,
+            amountWei: amountWei,
+            recipient: recipient,
+            deadline: deadline,
+            approvalType: ApprovalType(approvalType),
+            proposalStatus: ProposalStatus.Voting,
+            contentHash: contentHash,
+            cancelReasonHash: bytes32(0),
+            canceledAt: 0
+        });
+
+        emit ProposalCreated(
+            address(this),
+            proposalId,
+            proposalType,
+            msg.sender,
+            amountWei,
+            recipient,
+            deadline,
+            approvalType,
+            contentHash
+        );
+    }
+
+    function cancelProposal(uint256 proposalId, bytes32 cancelReasonHash) external {
+        if (!_proposalExists(proposalId)) revert ProposalNotFound(proposalId);
+        if (cancelReasonHash == bytes32(0)) revert InvalidCancelReasonHash();
+
+        Proposal storage proposal = _proposals[proposalId];
+
+        if (proposal.proposer != msg.sender) revert NotProposer(msg.sender);
+        if (proposal.proposalStatus != ProposalStatus.Voting) {
+            revert ProposalNotVoting(proposal.proposalStatus);
+        }
+        if (block.timestamp >= proposal.deadline) revert ProposalDeadlinePassed();
+
+        proposal.proposalStatus = ProposalStatus.Canceled;
+        proposal.cancelReasonHash = cancelReasonHash;
+        proposal.canceledAt = block.timestamp;
+
+        if (proposal.proposalType == ProposalType.Termination) {
+            status = DaoStatus.Active;
+        }
+
+        emit ProposalCanceled(
+            address(this),
+            proposalId,
+            msg.sender,
+            cancelReasonHash,
+            block.timestamp
+        );
+    }
+
     function _addMember(address member) private {
         if (member == address(0)) revert InvalidMember();
         if (isMember[member]) revert DuplicateMember(member);
 
         isMember[member] = true;
         _members.push(member);
+    }
+
+    function _proposalExists(uint256 proposalId) private view returns (bool) {
+        return proposalId > 0 && proposalId < _nextProposalId;
+    }
+
+    function _revertIfActiveProposalExists() private view {
+        for (uint256 proposalId = 1; proposalId < _nextProposalId; proposalId++) {
+            ProposalStatus proposalStatus = _proposals[proposalId].proposalStatus;
+
+            if (
+                proposalStatus == ProposalStatus.Voting ||
+                proposalStatus == ProposalStatus.Executable
+            ) {
+                revert ActiveProposalExists(proposalId);
+            }
+        }
     }
 }
