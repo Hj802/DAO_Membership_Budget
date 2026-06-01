@@ -42,12 +42,23 @@ contract DAOVault {
     address[] private _members;
     mapping(address => bool) public isMember;
 
+    event DepositReceived(
+        address indexed daoAddress,
+        address indexed depositor,
+        uint256 amount,
+        uint256 balanceAfter,
+        uint256 timestamp
+    );
+
     error EmptyName();
     error InvalidCreator();
     error InvalidMember();
     error DuplicateMember(address member);
     error TooManyMembers();
     error InvalidApprovalRule();
+    error NotMember(address account);
+    error DaoNotActive(DaoStatus currentStatus);
+    error ZeroDeposit();
 
     constructor(
         string memory daoName,
@@ -78,6 +89,24 @@ contract DAOVault {
 
     function memberCount() external view returns (uint256) {
         return _members.length;
+    }
+
+    function currentBalance() external view returns (uint256) {
+        return address(this).balance;
+    }
+
+    function deposit() external payable {
+        if (!isMember[msg.sender]) revert NotMember(msg.sender);
+        if (status != DaoStatus.Active) revert DaoNotActive(status);
+        if (msg.value == 0) revert ZeroDeposit();
+
+        emit DepositReceived(
+            address(this),
+            msg.sender,
+            msg.value,
+            address(this).balance,
+            block.timestamp
+        );
     }
 
     function _addMember(address member) private {
