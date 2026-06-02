@@ -50,6 +50,10 @@ export function blockExplorerAddressUrl(address: string) {
   return `https://sepolia.etherscan.io/address/${address}`;
 }
 
+export function blockExplorerTxUrl(txHash: string) {
+  return `https://sepolia.etherscan.io/tx/${txHash}`;
+}
+
 function parseChainId(value: unknown) {
   if (typeof value === 'string') {
     return value.startsWith('0x') ? Number.parseInt(value, 16) : Number(value);

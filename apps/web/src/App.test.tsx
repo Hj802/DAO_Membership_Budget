@@ -43,7 +43,7 @@ import {
   validateTerminationProposalInput,
   voteSelector,
 } from './transactions';
-import { blockExplorerAddressUrl, formatAddress, isSepolia } from './wallet';
+import { blockExplorerAddressUrl, blockExplorerTxUrl, formatAddress, isSepolia } from './wallet';
 
 const memberAddress = '0xc000000000000000000000000000000000000001';
 
@@ -188,6 +188,22 @@ const phase13History: TransactionLog[] = [
   },
 ];
 
+const phase15History: TransactionLog[] = [
+  ...phase13History,
+  {
+    txHash: '0xtermination',
+    logIndex: 3,
+    daoAddress: daos[0].daoAddress,
+    proposalId: '5',
+    eventType: 'TerminationExecuted',
+    actor: memberAddress,
+    amountWei: '0',
+    status: 'termination:executed',
+    blockNumber: '4',
+    createdAt: '2026-06-02T00:04:00.000Z',
+  },
+];
+
 const evidenceFiles: EvidenceFileRecord[] = [
   {
     evidenceId: 'e1',
@@ -292,6 +308,7 @@ describe('phase 10 and 11 web UI', () => {
     expect(blockExplorerAddressUrl(memberAddress)).toBe(
       `https://sepolia.etherscan.io/address/${memberAddress}`,
     );
+    expect(blockExplorerTxUrl('0xtx')).toBe('https://sepolia.etherscan.io/tx/0xtx');
   });
 
   it('loads the connected member DAO list from the API client', async () => {
@@ -642,6 +659,30 @@ describe('phase 10 and 11 web UI', () => {
     expect(evidenceHtml).not.toContain('회비 입금');
   });
 
+  it('renders phase 15 polish for success notices, explorer links, and termination history', () => {
+    const pendingHtml = renderConnectedLayout({
+      txState: { status: 'pending', message: 'Waiting' },
+    });
+    const noticeHtml = renderConnectedLayout({
+      txState: { status: 'success', message: 'Sent', txHash: '0xsent' },
+    });
+
+    expect(pendingHtml).toContain('alert warning');
+    expect(noticeHtml).toContain('alert success');
+    expect(noticeHtml).toContain('https://sepolia.etherscan.io/tx/0xsent');
+
+    const historyHtml = renderConnectedLayout({
+      budgetFilter: 'execution',
+      budgetHistory: phase15History,
+      daoDetail,
+      selectedDao: daos[0],
+      view: 'budget',
+    });
+
+    expect(historyHtml).toContain('DAO 종료 실행');
+    expect(historyHtml).toContain('https://sepolia.etherscan.io/tx/0xtermination');
+  });
+
   it('encodes execute and evidence hash registration transaction payloads', () => {
     expect(encodeExecuteProposalCall('2')).toBe(
       `${executeProposalSelector}${'2'.padStart(64, '0')}`,
@@ -660,9 +701,9 @@ describe('phase 10 and 11 web UI', () => {
       view: 'dashboard',
     });
 
-    expect(blockedHtml).toContain('DAO termination');
+    expect(blockedHtml).toContain('DAO 종료');
     expect(blockedHtml).toContain(
-      'DAO termination can be proposed after voting and executable proposals are resolved.',
+      '투표 중이거나 집행 가능한 제안을 먼저 처리해야 DAO 종료를 제안할 수 있습니다.',
     );
 
     const html = renderConnectedLayout({
@@ -671,8 +712,8 @@ describe('phase 10 and 11 web UI', () => {
       view: 'termination-create',
     });
 
-    expect(html).toContain('DAO termination proposal');
-    expect(html).toContain('Estimated refund per member');
+    expect(html).toContain('DAO 종료 제안');
+    expect(html).toContain('예상 1인 반환액');
     expect(html).toContain('proposalType=1, amountWei=0, recipient=address(0)');
   });
 
@@ -684,7 +725,7 @@ describe('phase 10 and 11 web UI', () => {
       view: 'proposal-detail',
     });
 
-    expect(html).toContain('Execute DAO termination');
+    expect(html).toContain('DAO 종료 실행');
     expect(html).not.toContain('>吏異?吏묓뻾</button>');
   });
 

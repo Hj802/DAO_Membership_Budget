@@ -195,15 +195,15 @@ export function validateTerminationProposalInput(
   const title = input.title.trim();
   const description = input.description.trim();
 
-  if (!title) return { ok: false, error: 'Termination proposal title is required.' };
-  if (!description) return { ok: false, error: 'Termination proposal reason is required.' };
-  if (!isAddress(input.daoAddress)) return { ok: false, error: 'DAO address is invalid.' };
-  if (!isAddress(input.proposer)) return { ok: false, error: 'Proposer address is invalid.' };
+  if (!title) return { ok: false, error: '종료 제안 제목을 입력하세요.' };
+  if (!description) return { ok: false, error: '종료 제안 사유를 입력하세요.' };
+  if (!isAddress(input.daoAddress)) return { ok: false, error: 'DAO 주소가 올바르지 않습니다.' };
+  if (!isAddress(input.proposer)) return { ok: false, error: '제안자 주소가 올바르지 않습니다.' };
   if (![ApprovalType.Default, ApprovalType.Unanimous].includes(input.approvalType)) {
-    return { ok: false, error: 'Approval type is invalid.' };
+    return { ok: false, error: '승인 조건이 올바르지 않습니다.' };
   }
   if (!Number.isInteger(input.deadline) || input.deadline * 1000 <= nowMs) {
-    return { ok: false, error: 'Voting deadline must be in the future.' };
+    return { ok: false, error: '투표 마감일은 현재 시각 이후여야 합니다.' };
   }
 
   return {

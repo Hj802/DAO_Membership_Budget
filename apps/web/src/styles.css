@@ -799,6 +799,11 @@ button:disabled {
   color: #92400e;
 }
 
+.alert.success {
+  background: #ecfdf5;
+  color: #065f46;
+}
+
 .alert.danger {
   background: #ffdad6;
   color: #93000a;

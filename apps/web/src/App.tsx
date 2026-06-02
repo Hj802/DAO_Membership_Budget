@@ -20,6 +20,7 @@ import {
 } from './api';
 import {
   blockExplorerAddressUrl,
+  blockExplorerTxUrl,
   createInjectedWalletClient,
   formatAddress,
   isSepolia,
@@ -450,21 +451,21 @@ export function App({ apiClient, walletClient }: AppProps) {
     if (currentDao.status !== DaoStatus.Active) {
       setTxState({
         status: 'error',
-        message: 'Only active DAOs can create termination proposals.',
+        message: '활성 DAO에서만 종료 제안을 생성할 수 있습니다.',
       });
       return;
     }
     if (!detail) {
       setTxState({
         status: 'error',
-        message: 'DAO detail must be loaded before creating a termination proposal.',
+        message: '종료 제안을 생성하려면 DAO 상세 정보를 먼저 불러와야 합니다.',
       });
       return;
     }
     if (hasBlockingProposal(detail?.proposals ?? [])) {
       setTxState({
         status: 'error',
-        message: 'Resolve voting or executable proposals before creating a termination proposal.',
+        message: '진행 중이거나 집행 가능한 제안을 먼저 처리해야 종료 제안을 생성할 수 있습니다.',
       });
       return;
     }
@@ -484,7 +485,7 @@ export function App({ apiClient, walletClient }: AppProps) {
 
     setTxState({
       status: 'pending',
-      message: 'Creating termination proposal hash and waiting for wallet confirmation.',
+      message: '종료 제안 해시를 생성하고 지갑 확인을 기다리는 중입니다.',
     });
     try {
       const hash = await api.hashProposal({
@@ -527,7 +528,7 @@ export function App({ apiClient, walletClient }: AppProps) {
       });
       setTxState({
         status: 'success',
-        message: 'Termination proposal transaction was sent and details were saved.',
+        message: '종료 제안 트랜잭션을 전송했고 제안 상세를 저장했습니다.',
         txHash,
       });
       setView('proposals');
@@ -535,7 +536,7 @@ export function App({ apiClient, walletClient }: AppProps) {
     } catch (error) {
       setTxState({
         status: 'error',
-        message: error instanceof Error ? error.message : 'Termination proposal creation failed.',
+        message: error instanceof Error ? error.message : '종료 제안 생성에 실패했습니다.',
       });
     }
   }
@@ -650,7 +651,7 @@ export function App({ apiClient, walletClient }: AppProps) {
 
     setTxState({
       status: 'pending',
-      message: 'Waiting for DAO termination transaction confirmation.',
+      message: 'DAO 종료 실행 트랜잭션 확인을 기다리는 중입니다.',
     });
     try {
       const txHash = await wallet.sendTransaction({
@@ -660,7 +661,7 @@ export function App({ apiClient, walletClient }: AppProps) {
       });
       setTxState({
         status: 'success',
-        message: 'DAO termination transaction was sent. Event sync will update refunds and status.',
+        message: 'DAO 종료 실행 트랜잭션을 전송했습니다. 동기화 후 반환 내역과 상태가 갱신됩니다.',
         txHash,
       });
       await refreshDaos(walletState.address);
@@ -668,7 +669,7 @@ export function App({ apiClient, walletClient }: AppProps) {
     } catch (error) {
       setTxState({
         status: 'error',
-        message: error instanceof Error ? error.message : 'DAO termination transaction failed.',
+        message: error instanceof Error ? error.message : 'DAO 종료 실행 트랜잭션이 실패했습니다.',
       });
     }
   }
@@ -1357,7 +1358,7 @@ function DashboardView({
             disabled={!canCreateTermination}
             onClick={onCreateTerminationProposal}
           >
-            DAO termination
+            DAO 종료
           </button>
           <button className="secondary-button" onClick={onOpenBudget}>
             예산 내역
@@ -1370,13 +1371,12 @@ function DashboardView({
       {isLoading ? <div className="alert warning">DAO 상세 정보를 불러오는 중입니다.</div> : null}
       {dao.status === DaoStatus.TerminationVoting ? (
         <div className="alert warning">
-          DAO termination vote is in progress. Deposits, new spending proposals, and spending
-          execution are disabled.
+          DAO 종료 투표가 진행 중입니다. 입금, 신규 지출 제안, 일반 지출 집행은 비활성화됩니다.
         </div>
       ) : null}
       {dao.status === DaoStatus.Active && (blockingProposals?.length ?? 0) > 0 ? (
         <div className="alert warning">
-          DAO termination can be proposed after voting and executable proposals are resolved.
+          투표 중이거나 집행 가능한 제안을 먼저 처리해야 DAO 종료를 제안할 수 있습니다.
         </div>
       ) : null}
       <div className="metric-grid">
@@ -1535,11 +1535,7 @@ function DepositView({
                 <strong>{log.actor ? formatAddress(log.actor) : '-'}</strong>
                 <span>{log.amountWei ? `${formatWeiToEth(log.amountWei)} ETH` : '-'}</span>
               </div>
-              <a
-                href={`https://sepolia.etherscan.io/tx/${log.txHash}`}
-                rel="noreferrer"
-                target="_blank"
-              >
+              <a href={blockExplorerTxUrl(log.txHash)} rel="noreferrer" target="_blank">
                 확인됨
               </a>
             </div>
@@ -1702,7 +1698,7 @@ function TerminationProposalCreateView({
   onBack: () => void;
   onSubmit: (input: TerminationProposalFormData) => Promise<void>;
 }) {
-  const [title, setTitle] = useState('DAO termination');
+  const [title, setTitle] = useState('DAO 종료');
   const [description, setDescription] = useState('');
   const [deadlineLocal, setDeadlineLocal] = useState('');
   const [unanimous, setUnanimous] = useState(false);
@@ -1738,32 +1734,32 @@ function TerminationProposalCreateView({
   return (
     <form className="form-page" onSubmit={submit}>
       <button className="text-button" onClick={onBack} type="button">
-        Back to dashboard
+        대시보드로 돌아가기
       </button>
       <div className="content-header">
         <div>
-          <h1>DAO termination proposal</h1>
+          <h1>DAO 종료 제안</h1>
           <p>
-            Approved termination refunds the vault balance equally to every member. Remaining wei is
-            returned to the DAO creator.
+            승인된 종료 제안은 금고 잔액을 모든 구성원에게 균등 반환하고 남은 wei를 DAO 생성자에게
+            반환합니다.
           </p>
         </div>
       </div>
       {disabled ? (
         <div className="alert warning">
-          Termination proposals require an active DAO with no voting or executable proposals.
+          종료 제안은 진행 중이거나 집행 가능한 제안이 없는 활성 DAO에서만 생성할 수 있습니다.
         </div>
       ) : null}
       {formError ? <div className="alert danger">{formError}</div> : null}
       <section className="form-grid">
         <div className="form-panel wide">
-          <label htmlFor="termination-title">Title</label>
+          <label htmlFor="termination-title">제목</label>
           <input
             id="termination-title"
             onChange={(event) => setTitle(event.target.value)}
             value={title}
           />
-          <label htmlFor="termination-description">Reason</label>
+          <label htmlFor="termination-description">종료 사유</label>
           <textarea
             id="termination-description"
             onChange={(event) => setDescription(event.target.value)}
@@ -1774,23 +1770,23 @@ function TerminationProposalCreateView({
         <div className="form-panel">
           <dl className="summary-list">
             <div>
-              <dt>Current balance</dt>
+              <dt>현재 잔액</dt>
               <dd>{dao?.balanceEth ?? '-'} ETH</dd>
             </div>
             <div>
-              <dt>Members</dt>
+              <dt>구성원</dt>
               <dd>{dao?.memberCount ?? 0}</dd>
             </div>
             <div>
-              <dt>Estimated refund per member</dt>
+              <dt>예상 1인 반환액</dt>
               <dd>{refundPreview}</dd>
             </div>
             <div>
-              <dt>On-chain createProposal fields</dt>
+              <dt>온체인 createProposal 값</dt>
               <dd>proposalType=1, amountWei=0, recipient=address(0)</dd>
             </div>
           </dl>
-          <label htmlFor="termination-deadline">Voting deadline</label>
+          <label htmlFor="termination-deadline">투표 마감</label>
           <input
             id="termination-deadline"
             onChange={(event) => setDeadlineLocal(event.target.value)}
@@ -1803,16 +1799,16 @@ function TerminationProposalCreateView({
               onChange={(event) => setUnanimous(event.target.checked)}
               type="checkbox"
             />
-            <span>Require unanimous approval</span>
+            <span>만장일치 승인 필요</span>
           </label>
         </div>
       </section>
       <div className="form-actions">
         <button className="secondary-button" onClick={onBack} type="button">
-          Cancel
+          취소
         </button>
         <button className="primary-button" disabled={disabled || isPending} type="submit">
-          {isPending ? 'Waiting for transaction' : 'Create termination proposal'}
+          {isPending ? '트랜잭션 대기 중' : '종료 제안 생성'}
         </button>
       </div>
     </form>
@@ -1894,7 +1890,7 @@ function ProposalListView({
             disabled={!canCreateTermination}
             onClick={onCreateTermination}
           >
-            DAO termination
+            DAO 종료
           </button>
         </div>
       </div>
@@ -2131,7 +2127,7 @@ function ProposalDetailView({
                 disabled={isPending}
                 onClick={() => onExecuteTermination(proposal.proposalId)}
               >
-                Execute DAO termination
+                DAO 종료 실행
               </button>
             ) : null}
           </div>
@@ -2321,11 +2317,7 @@ function BudgetHistoryView({
                     </span>
                   ) : null}
                 </div>
-                <a
-                  href={`https://sepolia.etherscan.io/tx/${log.txHash}`}
-                  rel="noreferrer"
-                  target="_blank"
-                >
+                <a href={blockExplorerTxUrl(log.txHash)} rel="noreferrer" target="_blank">
                   {formatHash(log.txHash)}
                 </a>
               </div>
@@ -2447,15 +2439,14 @@ function MetricCard({ label, note, value }: { label: string; note?: string; valu
 function TransactionNotice({ txState }: { txState: TxState }) {
   if (txState.status === 'idle') return null;
 
+  const tone =
+    txState.status === 'error' ? 'danger' : txState.status === 'success' ? 'success' : 'warning';
+
   return (
-    <div className={`alert ${txState.status === 'error' ? 'danger' : 'warning'}`}>
+    <div className={`alert ${tone}`}>
       {txState.message}{' '}
       {txState.txHash ? (
-        <a
-          href={`https://sepolia.etherscan.io/tx/${txState.txHash}`}
-          rel="noreferrer"
-          target="_blank"
-        >
+        <a href={blockExplorerTxUrl(txState.txHash)} rel="noreferrer" target="_blank">
           트랜잭션 보기
         </a>
       ) : null}
@@ -2510,6 +2501,8 @@ function isEvidenceEvent(log: TransactionLog) {
 }
 
 function budgetEventLabel(eventType: string) {
+  if (eventType === 'TerminationExecuted') return 'DAO 종료 실행';
+
   const labels: Record<string, string> = {
     DepositReceived: '회비 입금',
     EvidenceHashRegistered: '증빙 등록',
