@@ -25,11 +25,14 @@ import {
   encodeCancelProposalCall,
   encodeCreateDaoCall,
   encodeCreateSpendingProposalCall,
+  encodeCreateTerminationProposalCall,
   encodeExecuteProposalCall,
+  encodeExecuteTerminationCall,
   encodeFinalizeProposalCall,
   encodeRegisterEvidenceHashCall,
   encodeVoteCall,
   executeProposalSelector,
+  executeTerminationSelector,
   finalizeProposalSelector,
   registerEvidenceHashSelector,
   toQuantityHex,
@@ -37,6 +40,7 @@ import {
   validateDepositEth,
   validateEvidenceRegistration,
   validateSpendingProposalInput,
+  validateTerminationProposalInput,
   voteSelector,
 } from './transactions';
 import { blockExplorerAddressUrl, formatAddress, isSepolia } from './wallet';
@@ -100,6 +104,34 @@ const daoDetail: DaoDetail = {
       contentHash: `0x${'b'.repeat(64)}`,
     },
   ],
+};
+
+const terminationDaoDetail: DaoDetail = {
+  ...daos[0],
+  status: DaoStatus.TerminationVoting,
+  proposals: [
+    {
+      proposalId: '5',
+      title: 'DAO termination',
+      description: 'Return remaining vault balance to members and close the DAO.',
+      proposalType: ProposalType.Termination,
+      amountWei: null,
+      recipient: null,
+      proposer: memberAddress,
+      status: ProposalStatus.Executable,
+      deadline: closedDeadline,
+      approvalType: ApprovalType.Default,
+      contentHash: `0x${'f'.repeat(64)}`,
+    },
+  ],
+  members: [memberAddress, '0xc000000000000000000000000000000000000002'],
+};
+
+const emptyProposalDaoDetail: DaoDetail = {
+  ...daos[0],
+  activeProposalCount: 0,
+  proposals: [],
+  members: [memberAddress, '0xc000000000000000000000000000000000000002'],
 };
 
 const voteHistory: TransactionLog[] = [
@@ -192,10 +224,12 @@ function renderConnectedLayout(overrides: Record<string, unknown> = {}) {
     onCancelProposal: async () => undefined,
     onCreateDao: async () => undefined,
     onCreateProposal: async () => undefined,
+    onCreateTerminationProposal: async () => undefined,
     onDeposit: async () => undefined,
     onBudgetFilterChange: () => undefined,
     onEvidenceSubmit: async () => undefined,
     onExecuteProposal: async () => undefined,
+    onExecuteTermination: async () => undefined,
     onFilterChange: () => undefined,
     onFinalizeProposal: async () => undefined,
     onProposalFilterChange: () => undefined,
@@ -617,6 +651,74 @@ describe('phase 10 and 11 web UI', () => {
         registerEvidenceHashSelector,
       ),
     ).toBe(true);
+  });
+
+  it('renders termination proposal entry points only after blocking proposals are resolved', () => {
+    const blockedHtml = renderConnectedLayout({
+      daoDetail,
+      selectedDao: daos[0],
+      view: 'dashboard',
+    });
+
+    expect(blockedHtml).toContain('DAO termination');
+    expect(blockedHtml).toContain(
+      'DAO termination can be proposed after voting and executable proposals are resolved.',
+    );
+
+    const html = renderConnectedLayout({
+      daoDetail: emptyProposalDaoDetail,
+      selectedDao: daos[0],
+      view: 'termination-create',
+    });
+
+    expect(html).toContain('DAO termination proposal');
+    expect(html).toContain('Estimated refund per member');
+    expect(html).toContain('proposalType=1, amountWei=0, recipient=address(0)');
+  });
+
+  it('allows termination voting/execution in termination-voting status', () => {
+    const html = renderConnectedLayout({
+      daoDetail: terminationDaoDetail,
+      selectedDao: { ...daos[0], status: DaoStatus.TerminationVoting },
+      selectedProposalId: '5',
+      view: 'proposal-detail',
+    });
+
+    expect(html).toContain('Execute DAO termination');
+    expect(html).not.toContain('>吏異?吏묓뻾</button>');
+  });
+
+  it('validates and encodes termination proposal and execution payloads', () => {
+    expect(
+      validateTerminationProposalInput(
+        {
+          daoAddress: daos[0].daoAddress,
+          proposer: memberAddress,
+          title: 'DAO termination',
+          description: 'Return remaining balance.',
+          deadline: votingDeadline,
+          approvalType: ApprovalType.Default,
+        },
+        Date.now(),
+      ),
+    ).toMatchObject({ ok: true });
+    expect(
+      encodeCreateTerminationProposalCall({
+        deadline: votingDeadline,
+        approvalType: ApprovalType.Default,
+        contentHash: `0x${'f'.repeat(64)}`,
+      }).startsWith(createProposalSelector),
+    ).toBe(true);
+    expect(
+      encodeCreateTerminationProposalCall({
+        deadline: votingDeadline,
+        approvalType: ApprovalType.Default,
+        contentHash: `0x${'f'.repeat(64)}`,
+      }),
+    ).toContain('1'.padStart(64, '0'));
+    expect(encodeExecuteTerminationCall('5')).toBe(
+      `${executeTerminationSelector}${'5'.padStart(64, '0')}`,
+    );
   });
 
   it('calls evidence hash, proposal detail evidence, and evidence metadata APIs', async () => {

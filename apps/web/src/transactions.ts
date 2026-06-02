@@ -13,6 +13,7 @@ export const voteSelector = '0xc9d27afe';
 export const finalizeProposalSelector = '0x5652077c';
 export const cancelProposalSelector = '0x8b0bbf39';
 export const executeProposalSelector = '0x0d61b519';
+export const executeTerminationSelector = '0x9077a46c';
 export const registerEvidenceHashSelector = '0x27892b39';
 
 const addressPattern = /^0x[a-fA-F0-9]{40}$/;
@@ -135,6 +136,25 @@ export type SpendingProposalValidationResult =
     }
   | { ok: false; error: string };
 
+export type TerminationProposalInput = {
+  daoAddress: string;
+  proposer: string;
+  title: string;
+  description: string;
+  deadline: number;
+  approvalType: ApprovalType;
+};
+
+export type TerminationProposalValidationResult =
+  | {
+      ok: true;
+      approvalType: ApprovalType;
+      deadline: number;
+      description: string;
+      title: string;
+    }
+  | { ok: false; error: string };
+
 export function validateSpendingProposalInput(
   input: SpendingProposalInput,
   nowMs = Date.now(),
@@ -164,6 +184,33 @@ export function validateSpendingProposalInput(
     deadline: input.deadline,
     description,
     recipient: normalizeAddress(input.recipient),
+    title,
+  };
+}
+
+export function validateTerminationProposalInput(
+  input: TerminationProposalInput,
+  nowMs = Date.now(),
+): TerminationProposalValidationResult {
+  const title = input.title.trim();
+  const description = input.description.trim();
+
+  if (!title) return { ok: false, error: 'Termination proposal title is required.' };
+  if (!description) return { ok: false, error: 'Termination proposal reason is required.' };
+  if (!isAddress(input.daoAddress)) return { ok: false, error: 'DAO address is invalid.' };
+  if (!isAddress(input.proposer)) return { ok: false, error: 'Proposer address is invalid.' };
+  if (![ApprovalType.Default, ApprovalType.Unanimous].includes(input.approvalType)) {
+    return { ok: false, error: 'Approval type is invalid.' };
+  }
+  if (!Number.isInteger(input.deadline) || input.deadline * 1000 <= nowMs) {
+    return { ok: false, error: 'Voting deadline must be in the future.' };
+  }
+
+  return {
+    ok: true,
+    approvalType: input.approvalType,
+    deadline: input.deadline,
+    description,
     title,
   };
 }
@@ -216,6 +263,22 @@ export function encodeCreateSpendingProposalCall(input: {
   ].join('');
 }
 
+export function encodeCreateTerminationProposalCall(input: {
+  deadline: number;
+  approvalType: ApprovalType;
+  contentHash: string;
+}) {
+  return [
+    createProposalSelector,
+    encodeUint(BigInt(ProposalType.Termination)),
+    encodeUint(0n),
+    encodeAddress('0x0000000000000000000000000000000000000000'),
+    encodeUint(BigInt(input.deadline)),
+    encodeUint(BigInt(input.approvalType)),
+    encodeBytes32(input.contentHash),
+  ].join('');
+}
+
 export function encodeVoteCall(proposalId: string, support: boolean) {
   return `${voteSelector}${encodeUint(BigInt(proposalId))}${encodeUint(support ? 1n : 0n)}`;
 }
@@ -232,6 +295,10 @@ export function encodeCancelProposalCall(proposalId: string, cancelReasonHash: s
 
 export function encodeExecuteProposalCall(proposalId: string) {
   return `${executeProposalSelector}${encodeUint(BigInt(proposalId))}`;
+}
+
+export function encodeExecuteTerminationCall(proposalId: string) {
+  return `${executeTerminationSelector}${encodeUint(BigInt(proposalId))}`;
 }
 
 export function encodeRegisterEvidenceHashCall(proposalId: string, evidenceHash: string) {

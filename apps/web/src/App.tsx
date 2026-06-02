@@ -30,7 +30,9 @@ import {
   encodeCancelProposalCall,
   encodeCreateDaoCall,
   encodeCreateSpendingProposalCall,
+  encodeCreateTerminationProposalCall,
   encodeExecuteProposalCall,
+  encodeExecuteTerminationCall,
   encodeFinalizeProposalCall,
   encodeRegisterEvidenceHashCall,
   encodeVoteCall,
@@ -42,6 +44,7 @@ import {
   validateDepositEth,
   validateEvidenceRegistration,
   validateSpendingProposalInput,
+  validateTerminationProposalInput,
 } from './transactions';
 import './styles.css';
 
@@ -54,6 +57,7 @@ type View =
   | 'dashboard'
   | 'deposit'
   | 'proposal-create'
+  | 'termination-create'
   | 'proposals'
   | 'proposal-detail'
   | 'budget';
@@ -439,6 +443,103 @@ export function App({ apiClient, walletClient }: AppProps) {
     }
   }
 
+  async function submitTerminationProposal(input: TerminationProposalFormData) {
+    if (!walletState.address || !selectedDao) return;
+    const detail = daoDetail;
+    const currentDao = detail ?? selectedDao;
+    if (currentDao.status !== DaoStatus.Active) {
+      setTxState({
+        status: 'error',
+        message: 'Only active DAOs can create termination proposals.',
+      });
+      return;
+    }
+    if (!detail) {
+      setTxState({
+        status: 'error',
+        message: 'DAO detail must be loaded before creating a termination proposal.',
+      });
+      return;
+    }
+    if (hasBlockingProposal(detail?.proposals ?? [])) {
+      setTxState({
+        status: 'error',
+        message: 'Resolve voting or executable proposals before creating a termination proposal.',
+      });
+      return;
+    }
+
+    const validation = validateTerminationProposalInput({
+      daoAddress: currentDao.daoAddress,
+      proposer: walletState.address,
+      title: input.title,
+      description: input.description,
+      deadline: input.deadline,
+      approvalType: input.approvalType,
+    });
+    if (!validation.ok) {
+      setTxState({ status: 'error', message: validation.error });
+      return;
+    }
+
+    setTxState({
+      status: 'pending',
+      message: 'Creating termination proposal hash and waiting for wallet confirmation.',
+    });
+    try {
+      const hash = await api.hashProposal({
+        schemaVersion: 1,
+        chainId: SEPOLIA_CHAIN_ID,
+        daoAddress: currentDao.daoAddress,
+        proposalType: ProposalType.Termination,
+        proposer: walletState.address,
+        title: validation.title,
+        description: validation.description,
+        amountWei: null,
+        recipient: null,
+        deadline: validation.deadline,
+        approvalType: validation.approvalType,
+      });
+      const txHash = await wallet.sendTransaction({
+        from: walletState.address,
+        to: currentDao.daoAddress,
+        data: encodeCreateTerminationProposalCall({
+          deadline: validation.deadline,
+          approvalType: validation.approvalType,
+          contentHash: hash.contentHash,
+        }),
+      });
+      const proposalId = getNextProposalId(detail?.proposals ?? []);
+      await api.saveProposalDetail({
+        schemaVersion: 1,
+        chainId: SEPOLIA_CHAIN_ID,
+        daoAddress: currentDao.daoAddress,
+        proposalType: ProposalType.Termination,
+        proposer: walletState.address,
+        title: validation.title,
+        description: validation.description,
+        amountWei: null,
+        recipient: null,
+        deadline: validation.deadline,
+        approvalType: validation.approvalType,
+        proposalId,
+        contentHash: hash.contentHash,
+      });
+      setTxState({
+        status: 'success',
+        message: 'Termination proposal transaction was sent and details were saved.',
+        txHash,
+      });
+      setView('proposals');
+      setDetailRefreshNonce((value) => value + 1);
+    } catch (error) {
+      setTxState({
+        status: 'error',
+        message: error instanceof Error ? error.message : 'Termination proposal creation failed.',
+      });
+    }
+  }
+
   async function submitVote(proposalId: string, support: boolean) {
     if (!walletState.address || !selectedDao) return;
 
@@ -544,6 +645,34 @@ export function App({ apiClient, walletClient }: AppProps) {
     }
   }
 
+  async function submitExecuteTermination(proposalId: string) {
+    if (!walletState.address || !selectedDao) return;
+
+    setTxState({
+      status: 'pending',
+      message: 'Waiting for DAO termination transaction confirmation.',
+    });
+    try {
+      const txHash = await wallet.sendTransaction({
+        from: walletState.address,
+        to: selectedDao.daoAddress,
+        data: encodeExecuteTerminationCall(proposalId),
+      });
+      setTxState({
+        status: 'success',
+        message: 'DAO termination transaction was sent. Event sync will update refunds and status.',
+        txHash,
+      });
+      await refreshDaos(walletState.address);
+      setDetailRefreshNonce((value) => value + 1);
+    } catch (error) {
+      setTxState({
+        status: 'error',
+        message: error instanceof Error ? error.message : 'DAO termination transaction failed.',
+      });
+    }
+  }
+
   async function submitEvidence(input: EvidenceRegistrationInput) {
     if (!walletState.address || !selectedDao) return;
 
@@ -620,6 +749,7 @@ export function App({ apiClient, walletClient }: AppProps) {
       isLoadingDaos={isLoadingDaos}
       isLoadingDetail={isLoadingDetail}
       onCreateDao={submitCreateDao}
+      onCreateTerminationProposal={submitTerminationProposal}
       onDeposit={submitDeposit}
       onFilterChange={setDaoFilter}
       onProposalFilterChange={setProposalFilter}
@@ -628,6 +758,7 @@ export function App({ apiClient, walletClient }: AppProps) {
       onCreateProposal={submitSpendingProposal}
       onEvidenceSubmit={submitEvidence}
       onExecuteProposal={submitExecuteProposal}
+      onExecuteTermination={submitExecuteTermination}
       onFinalizeProposal={submitFinalize}
       onBudgetFilterChange={setBudgetFilter}
       onVote={submitVote}
@@ -724,9 +855,11 @@ type ConnectedLayoutProps = {
   onCancelProposal: (proposalId: string, cancelReason: string) => Promise<void>;
   onCreateDao: (input: CreateDaoFormData) => Promise<void>;
   onCreateProposal: (input: SpendingProposalFormData) => Promise<void>;
+  onCreateTerminationProposal: (input: TerminationProposalFormData) => Promise<void>;
   onDeposit: (amountEth: string) => Promise<void>;
   onEvidenceSubmit: (input: EvidenceRegistrationInput) => Promise<void>;
   onExecuteProposal: (proposalId: string) => Promise<void>;
+  onExecuteTermination: (proposalId: string) => Promise<void>;
   onFilterChange: (filter: DaoFilter) => void;
   onFinalizeProposal: (proposalId: string) => Promise<void>;
   onProposalFilterChange: (filter: ProposalFilter) => void;
@@ -794,6 +927,7 @@ export function ConnectedLayout(props: ConnectedLayoutProps) {
             isLoading={props.isLoadingDetail}
             onDeposit={() => props.onViewChange('deposit')}
             onCreateProposal={() => props.onViewChange('proposal-create')}
+            onCreateTerminationProposal={() => props.onViewChange('termination-create')}
             onOpenBudget={() => props.onViewChange('budget')}
             onOpenProposals={() => props.onViewChange('proposals')}
           />
@@ -815,11 +949,20 @@ export function ConnectedLayout(props: ConnectedLayoutProps) {
             onSubmit={props.onCreateProposal}
           />
         ) : null}
+        {props.view === 'termination-create' ? (
+          <TerminationProposalCreateView
+            dao={props.daoDetail ?? props.selectedDao}
+            isPending={props.txState.status === 'pending'}
+            onBack={() => props.onViewChange('dashboard')}
+            onSubmit={props.onCreateTerminationProposal}
+          />
+        ) : null}
         {props.view === 'proposals' ? (
           <ProposalListView
             dao={props.daoDetail ?? props.selectedDao}
             filter={props.proposalFilter}
             onCreate={() => props.onViewChange('proposal-create')}
+            onCreateTermination={() => props.onViewChange('termination-create')}
             onFilterChange={props.onProposalFilterChange}
             onOpen={props.onSelectProposal}
           />
@@ -835,6 +978,7 @@ export function ConnectedLayout(props: ConnectedLayoutProps) {
             onCancel={props.onCancelProposal}
             onEvidenceSubmit={props.onEvidenceSubmit}
             onExecute={props.onExecuteProposal}
+            onExecuteTermination={props.onExecuteTermination}
             onFinalize={props.onFinalizeProposal}
             onVote={props.onVote}
             proposalId={props.selectedProposalId}
@@ -1161,6 +1305,7 @@ function DashboardView({
   dao,
   isLoading,
   onCreateProposal,
+  onCreateTerminationProposal,
   onDeposit,
   onOpenBudget,
   onOpenProposals,
@@ -1169,6 +1314,7 @@ function DashboardView({
   dao: DaoSummary | DaoDetail | null;
   isLoading: boolean;
   onCreateProposal: () => void;
+  onCreateTerminationProposal: () => void;
   onDeposit: () => void;
   onOpenBudget: () => void;
   onOpenProposals: () => void;
@@ -1185,6 +1331,9 @@ function DashboardView({
   const metrics = summarizeBudget(budgetHistory);
   const disabled = dao.status !== DaoStatus.Active;
   const recentProposals = 'proposals' in dao ? dao.proposals.slice(0, 3) : [];
+  const blockingProposals = 'proposals' in dao ? getBlockingProposals(dao.proposals) : null;
+  const canCreateTermination =
+    dao.status === DaoStatus.Active && blockingProposals !== null && blockingProposals.length === 0;
 
   return (
     <section className="dashboard" data-testid="dashboard-view">
@@ -1203,6 +1352,13 @@ function DashboardView({
           <button className="primary-button" disabled={disabled} onClick={onCreateProposal}>
             지출 제안
           </button>
+          <button
+            className="secondary-button"
+            disabled={!canCreateTermination}
+            onClick={onCreateTerminationProposal}
+          >
+            DAO termination
+          </button>
           <button className="secondary-button" onClick={onOpenBudget}>
             예산 내역
           </button>
@@ -1212,6 +1368,17 @@ function DashboardView({
         <div className="alert warning">종료 상태의 DAO에서는 입금할 수 없습니다.</div>
       ) : null}
       {isLoading ? <div className="alert warning">DAO 상세 정보를 불러오는 중입니다.</div> : null}
+      {dao.status === DaoStatus.TerminationVoting ? (
+        <div className="alert warning">
+          DAO termination vote is in progress. Deposits, new spending proposals, and spending
+          execution are disabled.
+        </div>
+      ) : null}
+      {dao.status === DaoStatus.Active && (blockingProposals?.length ?? 0) > 0 ? (
+        <div className="alert warning">
+          DAO termination can be proposed after voting and executable proposals are resolved.
+        </div>
+      ) : null}
       <div className="metric-grid">
         <MetricCard
           label="현재 금고 잔액"
@@ -1394,6 +1561,13 @@ type SpendingProposalFormData = {
   approvalType: ApprovalType;
 };
 
+type TerminationProposalFormData = {
+  title: string;
+  description: string;
+  deadline: number;
+  approvalType: ApprovalType;
+};
+
 type EvidenceRegistrationInput = {
   proposal: ProposalDetail;
   evidenceType: string;
@@ -1517,16 +1691,146 @@ function SpendingProposalCreateView({
   );
 }
 
+function TerminationProposalCreateView({
+  dao,
+  isPending,
+  onBack,
+  onSubmit,
+}: {
+  dao: DaoSummary | DaoDetail | null;
+  isPending: boolean;
+  onBack: () => void;
+  onSubmit: (input: TerminationProposalFormData) => Promise<void>;
+}) {
+  const [title, setTitle] = useState('DAO termination');
+  const [description, setDescription] = useState('');
+  const [deadlineLocal, setDeadlineLocal] = useState('');
+  const [unanimous, setUnanimous] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const blockingProposals = dao && 'proposals' in dao ? getBlockingProposals(dao.proposals) : null;
+  const disabled =
+    !dao ||
+    dao.status !== DaoStatus.Active ||
+    blockingProposals === null ||
+    blockingProposals.length > 0;
+  const refundPreview =
+    dao?.balanceEth && dao.memberCount > 0
+      ? `${formatWeiToEth((parseDisplayEthToWei(dao.balanceEth) / BigInt(dao.memberCount)).toString())} ETH`
+      : '-';
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    const deadline = Math.floor(new Date(deadlineLocal).getTime() / 1000);
+    if (!Number.isFinite(deadline)) {
+      setFormError('Voting deadline is required.');
+      return;
+    }
+
+    setFormError(null);
+    void onSubmit({
+      title,
+      description,
+      deadline,
+      approvalType: unanimous ? ApprovalType.Unanimous : ApprovalType.Default,
+    });
+  }
+
+  return (
+    <form className="form-page" onSubmit={submit}>
+      <button className="text-button" onClick={onBack} type="button">
+        Back to dashboard
+      </button>
+      <div className="content-header">
+        <div>
+          <h1>DAO termination proposal</h1>
+          <p>
+            Approved termination refunds the vault balance equally to every member. Remaining wei is
+            returned to the DAO creator.
+          </p>
+        </div>
+      </div>
+      {disabled ? (
+        <div className="alert warning">
+          Termination proposals require an active DAO with no voting or executable proposals.
+        </div>
+      ) : null}
+      {formError ? <div className="alert danger">{formError}</div> : null}
+      <section className="form-grid">
+        <div className="form-panel wide">
+          <label htmlFor="termination-title">Title</label>
+          <input
+            id="termination-title"
+            onChange={(event) => setTitle(event.target.value)}
+            value={title}
+          />
+          <label htmlFor="termination-description">Reason</label>
+          <textarea
+            id="termination-description"
+            onChange={(event) => setDescription(event.target.value)}
+            rows={6}
+            value={description}
+          />
+        </div>
+        <div className="form-panel">
+          <dl className="summary-list">
+            <div>
+              <dt>Current balance</dt>
+              <dd>{dao?.balanceEth ?? '-'} ETH</dd>
+            </div>
+            <div>
+              <dt>Members</dt>
+              <dd>{dao?.memberCount ?? 0}</dd>
+            </div>
+            <div>
+              <dt>Estimated refund per member</dt>
+              <dd>{refundPreview}</dd>
+            </div>
+            <div>
+              <dt>On-chain createProposal fields</dt>
+              <dd>proposalType=1, amountWei=0, recipient=address(0)</dd>
+            </div>
+          </dl>
+          <label htmlFor="termination-deadline">Voting deadline</label>
+          <input
+            id="termination-deadline"
+            onChange={(event) => setDeadlineLocal(event.target.value)}
+            type="datetime-local"
+            value={deadlineLocal}
+          />
+          <label className="checkbox-row">
+            <input
+              checked={unanimous}
+              onChange={(event) => setUnanimous(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Require unanimous approval</span>
+          </label>
+        </div>
+      </section>
+      <div className="form-actions">
+        <button className="secondary-button" onClick={onBack} type="button">
+          Cancel
+        </button>
+        <button className="primary-button" disabled={disabled || isPending} type="submit">
+          {isPending ? 'Waiting for transaction' : 'Create termination proposal'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function ProposalListView({
   dao,
   filter,
   onCreate,
+  onCreateTermination,
   onFilterChange,
   onOpen,
 }: {
   dao: DaoSummary | DaoDetail | null;
   filter: ProposalFilter;
   onCreate: () => void;
+  onCreateTermination: () => void;
   onFilterChange: (filter: ProposalFilter) => void;
   onOpen: (proposalId: string) => void;
 }) {
@@ -1534,6 +1838,11 @@ function ProposalListView({
     'proposals' in (dao ?? {}) ? (dao as DaoDetail).proposals : [],
     filter,
   );
+  const blockingProposals = dao && 'proposals' in dao ? getBlockingProposals(dao.proposals) : null;
+  const canCreateTermination =
+    dao?.status === DaoStatus.Active &&
+    blockingProposals !== null &&
+    blockingProposals.length === 0;
 
   return (
     <section className="dashboard">
@@ -1580,6 +1889,13 @@ function ProposalListView({
           >
             지출 제안
           </button>
+          <button
+            className="secondary-button"
+            disabled={!canCreateTermination}
+            onClick={onCreateTermination}
+          >
+            DAO termination
+          </button>
         </div>
       </div>
       <section className="panel-table">
@@ -1618,6 +1934,7 @@ function ProposalDetailView({
   onCancel,
   onEvidenceSubmit,
   onExecute,
+  onExecuteTermination,
   onFinalize,
   onVote,
   proposalId,
@@ -1631,6 +1948,7 @@ function ProposalDetailView({
   onCancel: (proposalId: string, reason: string) => Promise<void>;
   onEvidenceSubmit: (input: EvidenceRegistrationInput) => Promise<void>;
   onExecute: (proposalId: string) => Promise<void>;
+  onExecuteTermination: (proposalId: string) => Promise<void>;
   onFinalize: (proposalId: string) => Promise<void>;
   onVote: (proposalId: string, support: boolean) => Promise<void>;
   proposalId: string | null;
@@ -1662,10 +1980,22 @@ function ProposalDetailView({
   const isVoting = (selectedProposal.status ?? ProposalStatus.Voting) === ProposalStatus.Voting;
   const isBeforeDeadline = now < proposal.deadline;
   const hasVoted = votes.voters.has(normalizeAddress(currentAddress));
-  const canVote = isVoting && isBeforeDeadline && !hasVoted && dao.status === DaoStatus.Active;
+  const isTerminationProposal = selectedProposal.proposalType === ProposalType.Termination;
+  const canVote =
+    isVoting &&
+    isBeforeDeadline &&
+    !hasVoted &&
+    (dao.status === DaoStatus.Active ||
+      (isTerminationProposal && dao.status === DaoStatus.TerminationVoting));
   const canFinalize = isVoting && !isBeforeDeadline;
   const canExecute =
-    selectedProposal.status === ProposalStatus.Executable && dao.status === DaoStatus.Active;
+    !isTerminationProposal &&
+    selectedProposal.status === ProposalStatus.Executable &&
+    dao.status === DaoStatus.Active;
+  const canExecuteTermination =
+    isTerminationProposal &&
+    selectedProposal.status === ProposalStatus.Executable &&
+    dao.status === DaoStatus.TerminationVoting;
   const canCancel =
     isVoting &&
     isBeforeDeadline &&
@@ -1793,6 +2123,15 @@ function ProposalDetailView({
                 onClick={() => onExecute(proposal.proposalId)}
               >
                 지출 집행
+              </button>
+            ) : null}
+            {canExecuteTermination ? (
+              <button
+                className="primary-button"
+                disabled={isPending}
+                onClick={() => onExecuteTermination(proposal.proposalId)}
+              >
+                Execute DAO termination
               </button>
             ) : null}
           </div>
@@ -2159,7 +2498,10 @@ function filterBudgetHistory(history: TransactionLog[], filter: BudgetFilter) {
   if (filter === 'evidence') return history.filter(isEvidenceEvent);
 
   return history.filter(
-    (log) => log.eventType === 'ProposalExecuted' || log.eventType === 'ProposalExecutionFailed',
+    (log) =>
+      log.eventType === 'ProposalExecuted' ||
+      log.eventType === 'ProposalExecutionFailed' ||
+      log.eventType === 'TerminationExecuted',
   );
 }
 
@@ -2241,6 +2583,18 @@ function filterProposals(proposals: ProposalDetail[], filter: ProposalFilter) {
   );
 }
 
+function getBlockingProposals(proposals: ProposalDetail[]) {
+  return proposals.filter((proposal) =>
+    [ProposalStatus.Voting, ProposalStatus.Executable].includes(
+      proposal.status ?? ProposalStatus.Voting,
+    ),
+  );
+}
+
+function hasBlockingProposal(proposals: ProposalDetail[]) {
+  return getBlockingProposals(proposals).length > 0;
+}
+
 function getNextProposalId(proposals: ProposalDetail[]) {
   const maxProposalId = proposals.reduce((max, proposal) => {
     const id = Number(proposal.proposalId);
@@ -2257,6 +2611,13 @@ function formatWeiToEth(wei: string) {
   const trimmedFraction = fraction.replace(/0+$/, '');
 
   return trimmedFraction ? `${whole}.${trimmedFraction}` : whole.toString();
+}
+
+function parseDisplayEthToWei(value: string) {
+  const normalized = value.trim();
+  if (!/^\d+(\.\d{1,18})?$/.test(normalized)) return 0n;
+  const [whole, fraction = ''] = normalized.split('.');
+  return BigInt(whole) * 10n ** 18n + BigInt(fraction.padEnd(18, '0'));
 }
 
 function formatHash(hash: string) {
