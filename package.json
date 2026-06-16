@@ -9,10 +9,16 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
+    "cf:login": "wrangler login",
+    "cf:whoami": "wrangler whoami",
     "dev:api": "npm run dev -w @dao-budget/api",
+    "dev:cf:api": "wrangler dev --config apps/api/wrangler.toml --port 8789",
+    "dev:cf:web": "npm run build -w @dao-budget/web && wrangler pages dev apps/web/dist --port 8788",
     "dev:web": "npm run dev -w @dao-budget/web",
     "format": "prettier --check \"{apps,packages}/**/*.{ts,tsx,json}\" \"*.json\" \"README.md\"",
     "format:write": "prettier --write \"{apps,packages}/**/*.{ts,tsx,json}\" \"*.json\" \"README.md\"",
+    "deploy:api": "npm run build -w @dao-budget/api && wrangler deploy --config apps/api/wrangler.toml",
+    "deploy:web": "npm run build -w @dao-budget/web && wrangler pages deploy apps/web/dist --project-name dao-budget-web",
     "lint": "npm run format && npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
@@ -22,6 +28,7 @@
     "@types/node": "^22.10.0",
     "prettier": "^3.4.2",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "wrangler": "^4.96.0"
   }
 }

@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "hardhat compile",
+    "deploy:sepolia": "hardhat run scripts/deploy-sepolia.ts --network sepolia",
     "test": "hardhat test",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
